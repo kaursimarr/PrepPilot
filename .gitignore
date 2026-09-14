@@ -1,0 +1,17 @@
+books/
+extracted/
+cleaned/
+vector_db/
+chunks_semantic/
+extracted_images/
+*.db
+*.db-journal
+*.db-wal
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.vscode/
+.DS_Store
+

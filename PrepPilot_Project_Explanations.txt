@@ -1,0 +1,1246 @@
+PREPPILOT / ADAPTIVELEARN
+PROJECT DEVELOPMENT NOTES — CURRENT STAGE
+============================================================
+
+1. PROJECT OVERVIEW
+-------------------
+Project name:
+PrepPilot
+
+Major project concept:
+AdaptiveLearn: An AI-Driven Personalized Learning and Examination System
+
+Main idea:
+The system is designed as an intelligent adaptive learning and examination platform. It combines:
+- LLMs
+- Retrieval-Augmented Generation (RAG)
+- Student Knowledge Modeling
+- Question/PYQ intelligence
+- Adaptive quizzes
+- Personalized recommendations
+- AI-generated learning content
+
+Important design decision:
+The project is NOT intended to be only an LLM chatbot. The LLM is one component inside a larger intelligent system.
+
+Current Major-1 focus:
+Intelligent adaptive learning and examination.
+
+Major-2 features such as Voice AI Tutor, multimodal/image-based question understanding, advanced AI proctoring, etc. are NOT part of the current implementation unless explicitly added later.
+
+
+2. CURRENT PROJECT DOMAIN
+-------------------------
+Domain:
+Software Fundamentals, Data Structures and Algorithms, and Problem Solving.
+
+The learning system currently uses textbook/reference material related to:
+1. C programming
+2. C++
+3. Data Structures
+4. Algorithms
+
+
+3. SELECTED LEARNING MATERIAL
+-----------------------------
+Four reference books were selected:
+
+1. Let Us C — Yashavant Kanetkar
+2. C++: The Complete Reference — Herbert Schildt
+3. Handbook of Data Structures and Applications — Dinesh P. Mehta and Sartaj Sahni
+4. Introduction to Algorithms (CLRS), 3rd Edition — Cormen, Leiserson, Rivest, Stein
+
+The CLRS PDF was stored as APS.pdf in the local books directory.
+
+IMPORTANT:
+These books are used as local/private source material for the project. They should NOT be committed to a public GitHub repository because they are copyrighted/reference material.
+
+
+4. DATASET PLAN
+---------------
+Exactly two major datasets are planned.
+
+Dataset 1: Learning Material Dataset
+-------------------------------------
+Contains:
+- syllabus
+- textbooks
+- lecture slides
+- notes
+- other approved learning material
+
+Dataset 2: PYQ Dataset
+----------------------
+Contains:
+- previous-year questions
+- question metadata
+- topic information
+- marks
+- difficulty
+- source information
+
+The long-term goal is to connect both datasets through common topic IDs.
+
+Example question schema:
+- question_id
+- question_text
+- topic
+- subtopic
+- difficulty
+- marks
+- correct_answer
+- source
+
+
+5. OVERALL INTELLIGENT SYSTEM
+-----------------------------
+The planned architecture is approximately:
+
+USER
+  |
+  v
+Upload Syllabus / PYQs / Notes / Books
+  |
+  v
+Knowledge Acquisition Pipeline
+  |
+  +----------------------+
+  |                      |
+  v                      v
+Vector Database       SQL / Structured DB
+  |
+  v
+RAG Retrieval
+  |
+  v
+LLM
+  |
+  +------------------------------+
+  |                              |
+  v                              v
+AI Content Generation       AI Question Generation
+  |
+  v
+Student Knowledge Model
+  |
+  v
+Adaptive Quiz / Examination
+  |
+  v
+Performance Analysis
+  |
+  v
+Weak Topic Detection
+  |
+  v
+Prerequisite Engine
+  |
+  v
+Personalized Practice Recommendation
+  |
+  v
+Student Knowledge Model updated
+  |
+  +---------> Learning Loop
+
+
+6. STUDENT KNOWLEDGE MODEL
+---------------------------
+The system should maintain an estimate of a student's mastery of different topics.
+
+Example:
+
+Processes       0.91
+Scheduling      0.84
+Synchronization 0.67
+Deadlocks       0.43
+Paging          0.51
+Page Replacement 0.38
+
+The values represent estimated topic mastery and can be updated using quiz/exam performance.
+
+This model is important because it makes the project adaptive instead of simply generating questions for everyone equally.
+
+
+7. MAJOR FEATURES PLANNED
+--------------------------
+1. Syllabus Intelligence
+2. PYQ Intelligence Engine
+3. Question Likelihood / Exam Trend Analyzer
+4. AI Flashcards
+5. Adaptive Quiz Engine
+6. Full Mock Examination
+7. Knowledge Sparks / Interesting Facts
+8. Common Mistakes Engine
+9. Automatic Notes Generator
+10. Knowledge Acquisition Pipeline
+11. Prerequisite Engine
+12. AI Question Generator
+13. Personalized Practice Recommendation
+14. Anti-Cheating
+15. Student Analytics
+16. Student Knowledge Model / Mastery Loop
+
+
+8. TEAM DIVISION
+----------------
+Simar — AI and Knowledge Workstream
+------------------------------------
+Responsible/planned for:
+- Knowledge Acquisition
+- Syllabus Intelligence
+- RAG
+- AI Question Generator
+- Automatic Notes Generator
+- AI Flashcards
+- Knowledge Sparks
+- LLM integration
+
+Aditya — Adaptive Learning Workstream
+--------------------------------------
+Responsible/planned for:
+- Student Knowledge Model
+- Adaptive Quiz
+- Prerequisite Engine
+- Common Mistakes
+- Personalized Practice Recommendation
+- Student Analytics
+- Learning Loop
+
+Pranvi — Examination Intelligence Workstream
+--------------------------------------------
+Responsible/planned for:
+- PYQ Intelligence
+- PYQ Database
+- Exam Trend Analyzer
+- Question Likelihood
+- Mock Examination
+- Anti-Cheating
+- Exam Performance Report
+
+
+9. LOCAL PROJECT DIRECTORY
+--------------------------
+The working project directory is:
+
+C:\major\
+
+Planned structure:
+
+C:\major\
+├── books\
+├── extracted\
+├── cleaned\
+├── chunks\
+└── scripts\
+    ├── extract_pdf.py
+    ├── clean_text.py
+    └── chunk_text.py
+
+Additional project folders/files have also been used during development, including vector_db and semantic chunk outputs.
+
+
+10. PDF TEXT EXTRACTION
+-----------------------
+Library used:
+PyMuPDF
+
+Python import:
+import fitz
+
+Purpose:
+PyMuPDF is used to open PDF files and extract text page by page.
+
+Initial problem:
+The first attempt gave:
+
+ModuleNotFoundError: No module named 'fitz'
+
+Cause:
+PyMuPDF had been installed for a different Python version than the Python interpreter being used to execute the script.
+
+Resolution:
+PyMuPDF was installed specifically for Python 3.13 using:
+
+C:\Users\Asus\AppData\Local\Programs\Python\Python313\python.exe -m pip install PyMuPDF
+
+Then the import was verified successfully.
+
+Extraction result:
+The CLRS/APS PDF was successfully processed and contained 1313 pages.
+
+Raw extracted files:
+- DS_raw.txt
+- C_raw.txt
+- CPP_raw.txt
+- APS_raw.txt
+
+Important filename:
+APS_raw.txt must be used for the CLRS source because the PDF/source was named APS.pdf.
+
+The extraction process preserved page markers such as:
+
+===== PAGE N =====
+
+These markers are useful for later metadata and citation/page tracking.
+
+
+11. EXTRACTION SCRIPT
+---------------------
+The extraction script uses PyMuPDF.
+
+Basic process:
+
+1. Open the PDF.
+2. Determine the number of pages.
+3. Iterate through every page.
+4. Extract text from the page.
+5. Add a page marker.
+6. Write the combined text into a raw .txt file.
+
+Conceptually:
+
+import fitz
+
+doc = fitz.open(pdf_path)
+
+for page_number in range(len(doc)):
+    page = doc[page_number]
+    text = page.get_text()
+    output.write(text)
+
+Why page markers matter:
+RAG systems should ideally be able to identify where retrieved information came from. Page metadata can later be displayed with an answer or used for traceability.
+
+
+12. TEXT CLEANING
+-----------------
+After extraction, raw PDF text may contain:
+- repeated page headers
+- page numbers
+- excessive whitespace
+- PDF formatting artifacts
+- broken words
+- unwanted front matter
+- running headers
+- table-of-contents content
+- index material
+- copyright/usage boilerplate
+
+A cleaning stage was therefore introduced.
+
+Typical operations:
+- normalize whitespace
+- remove unwanted boilerplate
+- normalize repeated formatting
+- preserve useful page information when possible
+- remove obvious PDF extraction noise
+
+Important lesson:
+Removing ALL page markers too early makes page-aware chunking and source tracking harder.
+
+Therefore, page information should ideally be retained until chunk metadata has been generated.
+
+
+13. CHUNKING — WHY IT IS REQUIRED
+---------------------------------
+Large textbooks cannot be sent to an LLM as one huge document every time.
+
+Chunking divides the source material into smaller meaningful units.
+
+RAG workflow:
+
+Documents
+   |
+   v
+Text extraction
+   |
+   v
+Cleaning
+   |
+   v
+Chunking
+   |
+   v
+Embeddings
+   |
+   v
+Vector database
+   |
+   v
+Similarity retrieval
+   |
+   v
+LLM
+
+
+14. INITIAL CHUNKING APPROACH
+-----------------------------
+The first chunking approach used fixed-size chunks.
+
+Example:
+- target approximately 800 words
+- overlap approximately 100 words
+
+Each chunk was stored in JSONL.
+
+Why fixed-size chunking was useful:
+- simple
+- predictable
+- easy to implement
+- useful for an initial RAG prototype
+
+Problem:
+Textbooks are structured documents. Fixed word counts can split:
+- definitions
+- examples
+- algorithms
+- explanations
+- subsections
+- code blocks
+
+in the middle.
+
+Therefore, semantic/structure-aware chunking was developed.
+
+
+15. SEMANTIC CHUNKING
+---------------------
+The later chunking approach tries to respect textbook structure.
+
+Desired metadata:
+
+chunk_id
+book_id
+chapter
+section
+subsection
+page_start
+page_end
+text
+
+The chunker tries to detect:
+- chapters
+- sections
+- subsections
+- meaningful text blocks
+- code examples
+- page boundaries
+
+Target chunk size:
+approximately 800–1000 words depending on the document structure.
+
+Maximum desired chunk size:
+1200 words.
+
+Chunks should not become excessively small unless the source structure requires it.
+
+
+16. SEMANTIC CHUNKER DEVELOPMENT
+--------------------------------
+Several versions of the semantic chunker were tested.
+
+The development process involved repeatedly checking:
+- chunk sizes
+- chunk boundaries
+- chapter metadata
+- section metadata
+- page metadata
+- front matter
+- table of contents
+- running headers
+- index material
+- PDF artifacts
+- incomplete chunks
+- duplicate IDs
+- oversized chunks
+
+One important issue discovered:
+A PDF can contain repeated running headers such as chapter titles and page information. These can accidentally become part of the extracted text and pollute RAG retrieval.
+
+Another issue:
+Some PDFs contain front matter, tables of contents, references, appendices, character tables, or indexes that should not be treated as normal instructional material.
+
+
+17. VALIDATION OF CHUNKS
+------------------------
+A validation script was created to check the generated JSONL files.
+
+Checks included:
+- number of chunks
+- average word count
+- minimum word count
+- maximum word count
+- short chunks
+- oversized chunks
+- missing fields
+- duplicate chunk IDs
+- invalid page ranges
+- word-count mismatches
+- JSON parsing errors
+
+One validated version produced:
+
+CLRS:
+621 chunks
+Average ~854 words
+Minimum 494
+Maximum 1166
+
+C++:
+343 chunks
+Average ~698 words
+Minimum 500
+Maximum 983
+
+C:
+192 chunks
+Average ~731 words
+Minimum 504
+Maximum 990
+
+DS:
+841 chunks
+Average ~801 words
+Minimum 447
+Maximum 1157
+
+Validation result for that version:
+- no chunks below 250 words
+- no chunks above 1200 words
+- no missing required fields
+- no duplicate IDs
+- no bad page ranges
+- no word-count mismatches
+- no JSON errors
+
+
+18. IMPORTANT CHUNK QUALITY LESSON
+-----------------------------------
+A chunk can pass numerical validation and still be semantically bad.
+
+For example:
+- a chunk can have 800 words but start in the middle of a sentence
+- a chunk can contain unrelated topics
+- a running header can contaminate the text
+- an index can be mistaken for instructional material
+- a table of contents can be treated as learning content
+
+Therefore, both automated validation AND manual semantic review are required.
+
+A review script was also included in the project scripts to inspect chunk quality.
+
+
+19. CURRENT CHUNKING STATUS
+---------------------------
+The chunking work is NOT considered completely finished yet.
+
+The latest inspected chunk outputs showed some remaining issues, including:
+- PDF extraction artifacts
+- some semantic boundary problems
+- running-header contamination in CLRS
+- end-of-book/index contamination
+- a small chunk in one version
+- occasional oversized chunks in some later versions
+- artifacts such as broken words/drop caps
+
+Therefore, the final production-quality chunk set should be cleaned and validated again before using it as the definitive vector database source.
+
+Do NOT treat the earlier generated chunk ZIP as automatically final.
+
+
+20. VECTOR DATABASE — PLANNED NEXT STAGE
+----------------------------------------
+After final chunk validation, the chunks will be converted into embeddings.
+
+Basic RAG pipeline:
+
+Chunk text
+   |
+   v
+Embedding model
+   |
+   v
+Vector representation
+   |
+   v
+Vector Database
+   |
+   v
+Query embedding
+   |
+   v
+Similarity search
+   |
+   v
+Relevant chunks
+   |
+   v
+LLM
+
+
+21. WHY VECTOR DATABASE IS NEEDED
+---------------------------------
+When a student asks something like:
+
+"Explain deadlock prevention."
+
+the system should not ask the LLM to answer only from its general knowledge.
+
+Instead:
+1. Convert the query into an embedding.
+2. Search the vector database.
+3. Retrieve relevant textbook chunks.
+4. Give those chunks to the LLM.
+5. Generate a grounded answer.
+
+This is Retrieval-Augmented Generation (RAG).
+
+Benefits:
+- answers grounded in uploaded material
+- better syllabus alignment
+- less hallucination
+- source traceability
+- personalized retrieval later
+- connection between learning content and PYQs
+
+
+22. PLANNED RAG METADATA
+------------------------
+A useful chunk record should contain fields such as:
+
+{
+  "chunk_id": "...",
+  "book_id": "...",
+  "chapter": "...",
+  "section": "...",
+  "subsection": "...",
+  "page_start": 1,
+  "page_end": 3,
+  "text": "..."
+}
+
+The metadata can later be used to:
+- filter by book
+- filter by chapter
+- filter by topic
+- show source pages
+- connect retrieved material with questions
+
+
+23. AI QUESTION GENERATOR
+-------------------------
+The LLM can later generate questions from retrieved learning material.
+
+Possible inputs:
+- topic
+- difficulty
+- question type
+- marks
+- student mastery
+- source material
+
+Example:
+If a student has low mastery of page replacement algorithms, the system can retrieve relevant material and generate targeted practice questions.
+
+The LLM should generate questions grounded in the retrieved material rather than freely inventing unrelated content.
+
+
+24. AUTOMATIC NOTES GENERATOR
+-----------------------------
+The system can retrieve relevant textbook chunks and ask the LLM to produce concise study notes.
+
+Possible output:
+- key concepts
+- definitions
+- important formulas
+- algorithm steps
+- examples
+- common mistakes
+- quick revision points
+
+This makes the LLM a content-generation component inside the larger adaptive system.
+
+
+25. AI FLASHCARDS
+-----------------
+Flashcards can be generated from retrieved source material.
+
+Example:
+
+Front:
+What is the difference between stack and queue?
+
+Back:
+A stack follows LIFO, while a queue follows FIFO.
+
+The flashcards should be associated with topics so they can be recommended based on student weaknesses.
+
+
+26. KNOWLEDGE SPARKS
+--------------------
+Knowledge Sparks are short interesting facts or insights related to the current learning topic.
+
+They can be generated from or grounded in the available learning material.
+
+Purpose:
+- improve engagement
+- provide additional context
+- make learning less monotonous
+
+
+27. ADAPTIVE QUIZ ENGINE
+------------------------
+The quiz should not give every student the same questions.
+
+The system can use:
+- topic mastery
+- previous answers
+- difficulty
+- number of attempts
+- mistakes
+- prerequisites
+
+to select the next question.
+
+Example:
+Mastery = 0.38
+Difficulty = low/medium
+Recommendation = more foundational practice
+
+Mastery = 0.91
+Difficulty = high
+Recommendation = advanced application question
+
+
+28. PREREQUISITE ENGINE
+-----------------------
+Some topics depend on other topics.
+
+Example:
+
+Pointers
+   |
+   v
+Linked Lists
+   |
+   v
+Trees
+   |
+   v
+Advanced Data Structures
+
+If the student struggles with a topic, the prerequisite engine can determine whether an earlier concept should be revised first.
+
+
+29. COMMON MISTAKES ENGINE
+--------------------------
+The system can analyze incorrect answers and identify repeated error patterns.
+
+Example:
+Student repeatedly confuses:
+- BFS vs DFS
+- stack vs queue
+- paging vs segmentation
+
+The system can classify the mistake and recommend targeted revision.
+
+
+30. PERSONALIZED PRACTICE
+-------------------------
+The system can generate recommendations such as:
+
+"Revise recursion basics."
+"Practice 5 medium-level tree traversal questions."
+"Review page replacement algorithms before attempting advanced OS questions."
+
+Recommendations should be based on the student model rather than generic advice.
+
+
+31. PYQ INTELLIGENCE
+-------------------
+Previous-year questions will be stored with structured metadata.
+
+The system can analyze:
+- frequency of topics
+- repeated concepts
+- question types
+- marks distribution
+- difficulty trends
+- chapter-wise distribution
+
+The system should talk about trends/likelihood rather than claiming guaranteed prediction of exam questions.
+
+
+32. FULL MOCK EXAMINATION
+-------------------------
+A mock exam can be created using:
+- syllabus coverage
+- PYQ patterns
+- topic distribution
+- difficulty
+- marks
+- student knowledge state
+
+After the exam, the system can generate:
+- score
+- topic-wise performance
+- weak areas
+- mistakes
+- recommended revision
+- next practice set
+
+
+33. STUDENT LEARNING LOOP
+-------------------------
+The important intelligent loop is:
+
+Student attempts question
+        |
+        v
+Answer evaluated
+        |
+        v
+Topic mastery updated
+        |
+        v
+Weakness identified
+        |
+        v
+Prerequisite checked
+        |
+        v
+Learning material retrieved
+        |
+        v
+Personalized question/content generated
+        |
+        v
+Student practices again
+        |
+        v
+Mastery updated again
+
+This feedback loop is a key differentiator of the project.
+
+
+34. CURRENT PYTHON PROJECT SCRIPTS
+----------------------------------
+The public GitHub repository currently contains these scripts:
+
+scripts/build_vector_db.py
+scripts/chunk_text.py
+scripts/extract_pdf.py
+scripts/query_vector_db.py
+scripts/review_chunks.py
+scripts/semantic_chunker.py
+
+Purpose of scripts:
+
+extract_pdf.py
+----------------
+Extracts text from PDF documents.
+
+chunk_text.py
+-------------
+Provides the earlier/basic text chunking workflow.
+
+semantic_chunker.py
+-------------------
+Contains the more advanced semantic/structure-aware chunking workflow.
+
+review_chunks.py
+----------------
+Used to inspect generated chunks and identify semantic quality issues.
+
+build_vector_db.py
+------------------
+Intended for the vector database/embedding stage.
+
+query_vector_db.py
+------------------
+Intended for querying the vector database after it has been built.
+
+
+35. LIBRARIES / TECHNOLOGIES USED OR PLANNED
+--------------------------------------------
+Python
+------
+Main programming language used for the data processing pipeline.
+
+PyMuPDF (fitz)
+--------------
+Used for PDF reading and text extraction.
+
+JSON / JSONL
+------------
+Used for structured storage of chunks and metadata.
+
+Regular Expressions (re)
+------------------------
+Used for detecting:
+- chapters
+- sections
+- page markers
+- formatting patterns
+- PDF artifacts
+
+pathlib
+-------
+Used for filesystem paths and directory handling.
+
+os
+--
+Used for file and directory operations in some scripts.
+
+Vector Database
+---------------
+Planned/being developed as the next RAG stage.
+
+Embedding Model
+---------------
+Planned for converting text chunks and queries into vectors.
+
+LLM
+---
+Planned/used as the generative reasoning/content component.
+
+RAG
+---
+Planned as the grounding mechanism connecting learning material to the LLM.
+
+Git / GitHub
+------------
+Used for version control and project collaboration.
+
+
+36. GIT / GITHUB SETUP
+----------------------
+GitHub repository:
+PrepPilot
+
+Repository:
+https://github.com/kaursimarr/PrepPilot
+
+Local project:
+C:\major
+
+Git branch:
+main
+
+Initial commit:
+"Initial PrepPilot project setup"
+
+The first local push was rejected because the GitHub repository already contained remote history.
+
+Error:
+! [rejected] main -> main (fetch first)
+
+Reason:
+The remote repository had a commit that did not exist locally.
+
+Resolution:
+The remote branch was pulled using:
+
+git pull origin main --allow-unrelated-histories
+
+Git then opened the Vim editor to confirm the merge commit message.
+
+The merge message looked like:
+
+Merge branch 'main' of https://github.com/kaursimarr/PrepPilot
+
+To accept it:
+- press Esc
+- type :wq
+- press Enter
+
+After that:
+git status
+
+showed:
+
+On branch main
+All conflicts fixed but you are still merging.
+(use "git commit" to conclude merge)
+
+The merge was then completed with:
+
+git commit -m "Merge remote main"
+
+Then the repository can be pushed using:
+
+git push -u origin main
+
+
+37. GITIGNORE
+------------
+A .gitignore file was created to prevent large/private/unnecessary files from entering the public repository.
+
+Current important exclusions:
+
+books/
+extracted/
+cleaned/
+vector_db/
+chunks_semantic/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.vscode/
+.DS_Store
+
+Why:
+- textbook PDFs are copyrighted
+- extracted textbook text should not be publicly committed
+- cleaned textbook text should not be publicly committed
+- generated chunks should not be committed unless intentionally prepared/licensed
+- vector databases can be very large
+- environment files may contain secrets
+- Python cache files are unnecessary
+
+
+38. FILES CURRENTLY COMMITTED TO GITHUB
+---------------------------------------
+The initial project commit contained 7 files:
+
+.gitignore
+scripts/build_vector_db.py
+scripts/chunk_text.py
+scripts/extract_pdf.py
+scripts/query_vector_db.py
+scripts/review_chunks.py
+scripts/semantic_chunker.py
+
+The GitHub repository also contained a README.md from the remote repository, which was merged into the local history.
+
+The textbook source directories were intentionally excluded through .gitignore.
+
+
+39. GIT COMMANDS USED
+---------------------
+Initialize repository:
+git init
+
+Add remote:
+git remote add origin https://github.com/kaursimarr/PrepPilot.git
+
+Check status:
+git status
+
+Stage files:
+git add .
+
+Create commit:
+git commit -m "Initial PrepPilot project setup"
+
+Rename branch:
+git branch -M main
+
+First push:
+git push -u origin main
+
+Because remote history existed:
+git pull origin main --allow-unrelated-histories
+
+Finish merge:
+git commit -m "Merge remote main"
+
+Push merged repository:
+git push -u origin main
+
+
+40. IMPORTANT GIT SAFETY
+------------------------
+Do NOT use:
+
+git push --force
+
+unless there is a deliberate reason and the remote history has been checked.
+
+Normal workflow after the repository is synchronized:
+
+git status
+git add .
+git commit -m "meaningful message"
+git push
+
+
+41. CURRENT STATUS
+------------------
+Completed:
+[YES] Project concept defined
+[YES] Domain selected
+[YES] Four reference books selected
+[YES] PDF extraction implemented
+[YES] PyMuPDF installation issue resolved
+[YES] Raw text extraction completed
+[YES] Basic chunking implemented
+[YES] Semantic chunking explored
+[YES] Chunk validation implemented
+[YES] Git repository created
+[YES] GitHub remote connected
+[YES] .gitignore created
+[YES] Initial project commit created
+[YES] Remote README merged
+[YES] Main branch established
+
+Not fully completed:
+[ ] Final production-quality semantic chunks
+[ ] Final chunk semantic review
+[ ] Embedding generation
+[ ] Vector database construction
+[ ] RAG retrieval testing
+[ ] LLM integration
+[ ] AI question generation
+[ ] Student knowledge model implementation
+[ ] Adaptive quiz implementation
+[ ] PYQ intelligence implementation
+[ ] Full examination module
+[ ] Analytics/dashboard
+[ ] End-to-end frontend/backend integration
+
+
+42. NEXT RECOMMENDED TECHNICAL STEPS
+------------------------------------
+STEP 1
+------
+Finish and validate the semantic chunker.
+
+Focus on:
+- removing PDF artifacts
+- removing running headers
+- removing TOC/index contamination
+- preserving chapter/section metadata
+- preserving page metadata
+- enforcing maximum chunk size
+- maintaining meaningful semantic boundaries
+
+STEP 2
+------
+Generate the final JSONL chunk dataset.
+
+STEP 3
+------
+Choose an embedding model.
+
+STEP 4
+------
+Build the vector database using the final validated chunks.
+
+STEP 5
+------
+Test similarity search with real student questions.
+
+STEP 6
+------
+Implement RAG:
+Query
+-> embedding
+-> vector search
+-> top-k chunks
+-> context construction
+-> LLM
+-> grounded response
+
+STEP 7
+------
+Connect RAG to AI features:
+- notes
+- flashcards
+- questions
+- knowledge sparks
+
+STEP 8
+------
+Connect the output to the Student Knowledge Model.
+
+STEP 9
+------
+Implement adaptive quizzes and personalized recommendations.
+
+STEP 10
+-------
+Connect PYQ intelligence and mock examination.
+
+STEP 11
+-------
+Build frontend/dashboard and complete end-to-end integration.
+
+
+43. IMPORTANT PROJECT PRINCIPLE
+--------------------------------
+The core project should demonstrate intelligence, not just API usage.
+
+LLM alone:
+Student -> LLM -> answer
+
+AdaptiveLearn / PrepPilot:
+Student
+-> student model
+-> identify learning need
+-> retrieve relevant material
+-> generate targeted content/question
+-> evaluate performance
+-> update mastery
+-> recommend next action
+
+The second architecture is the actual adaptive learning system.
+
+
+44. VIVA EXPLANATION — SHORT VERSION
+-------------------------------------
+If asked:
+"What have you done so far?"
+
+Answer:
+
+"We designed PrepPilot as an AI-driven adaptive learning and examination system. We first selected structured learning resources for C, C++, Data Structures and Algorithms. We built a PDF knowledge acquisition pipeline using PyMuPDF to extract textbook content into raw text. Then we developed cleaning and semantic chunking pipelines so the textbook content can be divided into meaningful sections with chapter, section and page metadata. We also built validation and review mechanisms to check chunk quality. These chunks are the foundation for the upcoming embedding and vector database stage, which will enable RAG-based retrieval. The retrieved knowledge will then be used with an LLM for features such as AI-generated questions, notes and flashcards, while the student's performance will update a knowledge model for adaptive learning."
+
+
+45. KEY TERMS TO KNOW FOR VIVA
+-------------------------------
+PDF Extraction:
+Converting PDF content into machine-readable text.
+
+Cleaning:
+Removing extraction noise and unnecessary formatting.
+
+Chunking:
+Splitting large documents into smaller retrievable units.
+
+Semantic Chunking:
+Creating chunks according to document meaning/structure instead of only fixed word counts.
+
+Embedding:
+Converting text into numerical vectors representing semantic meaning.
+
+Vector Database:
+Stores embeddings and allows similarity-based retrieval.
+
+RAG:
+Retrieval-Augmented Generation. Relevant source chunks are retrieved first and supplied to the LLM as context.
+
+LLM:
+Large Language Model used for language understanding and generation.
+
+Student Knowledge Model:
+Representation of the student's estimated mastery of different topics.
+
+Adaptive Learning:
+Changing the learning content/questions based on the student's current knowledge and performance.
+
+Knowledge Acquisition:
+Pipeline for converting raw educational resources into structured machine-usable knowledge.
+
+
+46. FINAL NOTE
+--------------
+This document describes the work completed and planned up to the current project stage.
+
+The most important immediate technical task is:
+FINALIZE -> VALIDATE -> EMBED -> VECTOR DATABASE -> RAG
+
+Do not skip chunk-quality validation before building the final vector database. Poor chunks lead to poor retrieval, which leads to poor RAG answers.

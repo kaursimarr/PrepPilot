@@ -1,0 +1,28 @@
+# ============================================================
+# PrepPilot Dependencies
+# ============================================================
+
+# Core Embeddings & NLP
+sentence-transformers>=3.0.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# PDF & Diagram Extraction
+PyMuPDF>=1.24.0
+Pillow>=10.0.0
+
+# Local Unified Database (SQLite + sqlite-vec)
+sqlite-vec>=0.1.6
+
+# Cloud Database (AWS RDS PostgreSQL + pgvector)
+psycopg[binary]>=3.1.0
+pgvector>=0.2.5
+python-dotenv>=1.0.0
+
+# API & Backend (FastAPI Integration)
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.0.0
+
+# Utilities
+tqdm>=4.66.0

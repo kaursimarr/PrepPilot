@@ -47,13 +47,20 @@ def extract_one(book_id: str, pdf_path: Path, output_path: Path) -> None:
     doc = fitz.open(pdf_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    blank = []  # (page_number, image_count) for pages that gave back almost no text
     with output_path.open("w", encoding="utf-8") as f:
         for page_number, page in enumerate(doc, start=1):
             text = page.get_text()
+            if len(text.strip()) < 20:
+                blank.append((page_number, len(page.get_images())))
             f.write(f"\n\n===== PAGE {page_number} =====\n\n")
             f.write(text)
 
     print(f"{book_id}: extracted {len(doc)} pages -> {output_path}")
+    if blank:
+        with_images = sum(1 for _, n in blank if n)
+        print(f"  {len(blank)} pages returned (almost) no text; {with_images} of them contain images "
+              f"(likely scanned -> needs OCR). First few: {[p for p, _ in blank[:15]]}")
 
 
 def main():

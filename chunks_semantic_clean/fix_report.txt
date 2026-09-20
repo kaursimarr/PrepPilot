@@ -1,0 +1,55 @@
+
+DS: 709 old chunks -> 5651 new chunks
+  tokens median/max: 199/239   over 230: 26
+  removed: 532 running headers, 24 page numbers, 47065 duplicated overlap words, 3575 control chars
+  chunks flagged garbled_math: 110
+  excluded from the index (see DS_excluded.jsonl): 487 reference lists, 0 exercises, 9 chapter outlines, 108 tiny/all-number pieces
+  exercise blocks started (C): 0
+  pieces whose chapter/section label was re-derived from a heading inside them: 2503
+  reference-list tails trimmed off prose pieces: 61
+  chunks still starting with a number + capital word: 0
+  chunks still containing a spaced-out 'Ch a p t e r': 0
+  page gaps > 3 pages (excluded pages count as covered): 0 []
+  distinct breadcrumbs: 911
+  chapter titles recovered from text: 13 chunks
+  DS chunks with bogus chapter 0 relabelled from the previous chunk: 3
+  DS section labels reset (table caption / overlong title): 4
+
+C: 168 old chunks -> 955 new chunks
+  tokens median/max: 201/218   over 230: 0
+  removed: 703 running headers, 164 page numbers, 9691 duplicated overlap words, 0 control chars
+  chunks flagged garbled_math: 0
+  excluded from the index (see C_excluded.jsonl): 0 reference lists, 187 exercises, 1 chapter outlines, 12 tiny/all-number pieces
+  exercise blocks started (C): 25
+  pieces whose chapter/section label was re-derived from a heading inside them: 0
+  reference-list tails trimmed off prose pieces: 0
+  chunks still starting with a number + capital word: 0
+  chunks still containing a spaced-out 'Ch a p t e r': 0
+  page gaps > 3 pages (excluded pages count as covered): 0 []
+  distinct breadcrumbs: 19
+
+CPP: 275 old chunks -> 2184 new chunks
+  tokens median/max: 196/218   over 230: 0
+  removed: 800 running headers, 224 page numbers, 15177 duplicated overlap words, 0 control chars
+  chunks flagged garbled_math: 0
+  excluded from the index (see CPP_excluded.jsonl): 0 reference lists, 0 exercises, 0 chapter outlines, 23 tiny/all-number pieces
+  exercise blocks started (C): 0
+  pieces whose chapter/section label was re-derived from a heading inside them: 0
+  reference-list tails trimmed off prose pieces: 0
+  chunks still starting with a number + capital word: 0
+  chunks still containing a spaced-out 'Ch a p t e r': 0
+  page gaps > 3 pages (excluded pages count as covered): 0 []
+  distinct breadcrumbs: 39
+
+CLRS: 515 old chunks -> 4074 new chunks
+  tokens median/max: 200/236   over 230: 10
+  removed: 1315 running headers, 612 page numbers, 24096 duplicated overlap words, 10692 control chars
+  chunks flagged garbled_math: 1325
+  excluded from the index (see CLRS_excluded.jsonl): 76 reference lists, 0 exercises, 0 chapter outlines, 52 tiny/all-number pieces
+  exercise blocks started (C): 0
+  pieces whose chapter/section label was re-derived from a heading inside them: 446
+  reference-list tails trimmed off prose pieces: 1
+  chunks still starting with a number + capital word: 0
+  chunks still containing a spaced-out 'Ch a p t e r': 0
+  page gaps > 3 pages (excluded pages count as covered): 0 []
+  distinct breadcrumbs: 171

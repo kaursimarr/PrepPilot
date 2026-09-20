@@ -15,11 +15,13 @@ import argparse
 import json
 import sqlite3
 import sys
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BASE_DIR = SCRIPT_DIR.parent
-CHUNKS_DIR = BASE_DIR / "chunks_semantic"
+# Index the cleaned, re-split chunks (fix_chunks.py output, sized for MiniLM's 256-token limit).
+# The raw chunks_semantic/ files are ~900 words each, so ~75% of every chunk was never embedded.
+CHUNKS_DIR = BASE_DIR / "chunks_semantic_clean"
 DB_PATH = BASE_DIR / "preppilot.db"
 
 # Ensure workspace is on sys.path
@@ -128,7 +130,8 @@ def migrate(book_filter: Optional[str] = None, max_chunks_per_book: Optional[int
     for book_id in books_to_process:
         chunk_file = CHUNK_FILES.get(book_id)
         if not chunk_file or not chunk_file.exists():
-            print(f"\nSkipping {book_id}: {chunk_file} does not exist. (Run semantic_chunker.py to create chunks)")
+            print(f"\nSkipping {book_id}: {chunk_file} does not exist. "
+                  f"(Run semantic_chunker.py, then fix_chunks.py)")
             continue
 
         print(f"\nProcessing {book_id} chunks from {chunk_file.name}...")

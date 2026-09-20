@@ -20,6 +20,14 @@ OVERLAP = 0.10
 
 REBUILD_DS = True
 
+# Front matter / TOC heuristics are only applied right at the content start. Applying them to
+# every chunk dropped real prose (20-32% of DS/C/CPP); a "back of book" zone was tried too, but
+# all four books have real content (chapters 59-64, appendices) in their last 8% of pages.
+# The back-of-book index is handled by the "Index" marker in structure(), and bibliographies
+# are handled in fix_chunks.py.
+FRONT_ZONE_PAGES = 4       # chunks starting within this many pages of the content start
+BACK_ZONE_FRAC = None      # None = never filter by position at the end of the book
+
 BOOKS = {
     "DS": {
         "title": "Handbook of Data Structures and Applications",
@@ -363,6 +371,8 @@ def likely_topic(flat, i):
 
 def structure(pages, kind, start):
     selected = [p for p in pages if p.number >= start]
+    last_page = max((p.number for p in pages), default=0)
+    ignored_index_marks = []
 
     # Flatten while preserving page numbers.
     flat = [(line, p.number) for p in selected for line in p.lines]
@@ -413,9 +423,14 @@ def structure(pages, kind, start):
     while i < len(flat):
         s = flat[i][0].strip()
 
-        # Stop before the back-of-book index.
+        # Stop before the back-of-book index -- but only if the marker is near the
+        # end of the book. A stray line reading "Index"/"index" in a figure label or
+        # running text used to end the whole book early (CLRS stopped at PDF page 269).
         if INDEX_START_RE.fullmatch(s):
-            break
+            if flat[i][1] >= 0.8 * last_page:
+                print(f"  Back-of-book index marker at PDF page {flat[i][1]}; stopping there.")
+                break
+            ignored_index_marks.append(flat[i][1])
 
         h = None
 
@@ -494,6 +509,9 @@ def structure(pages, kind, start):
     if current and any(x.strip() for x, _ in current.lines):
         result.append(current)
 
+    if ignored_index_marks:
+        print(f"  Ignored {len(ignored_index_marks)} early 'Index' line(s) on PDF pages "
+              f"{ignored_index_marks[:8]} (not near the end of the book).")
     return result
 
 
@@ -933,7 +951,24 @@ def is_index_like(text):
     )
 
 
-def validate(chunks):
+def noise_reasons(c, start_page, last_page):
+    """Why a chunk looks like front matter / TOC / index -- only checked near the ends of the book."""
+    in_front = c["page_start"] <= start_page + FRONT_ZONE_PAGES
+    in_back = BACK_ZONE_FRAC is not None and c["page_end"] >= BACK_ZONE_FRAC * last_page
+    if not (in_front or in_back):
+        return []
+    text = c.get("text", "")
+    reasons = []
+    if is_frontmatter(text):
+        reasons.append("frontmatter")
+    if is_toc_like(text):
+        reasons.append("toc_like")
+    if is_index_like(text):
+        reasons.append("index_like")
+    return reasons
+
+
+def validate(chunks, start_page=0, last_page=10**9):
     ids = Counter(c["chunk_id"] for c in chunks)
     counts = [c["word_count"] for c in chunks]
 
@@ -954,9 +989,9 @@ def validate(chunks):
         for c in chunks
     )
 
-    frontmatter = sum(is_frontmatter(c.get("text", "")) for c in chunks)
-    toc_like = sum(is_toc_like(c.get("text", "")) for c in chunks)
-    index_like = sum(is_index_like(c.get("text", "")) for c in chunks)
+    frontmatter = sum("frontmatter" in noise_reasons(c, start_page, last_page) for c in chunks)
+    toc_like = sum("toc_like" in noise_reasons(c, start_page, last_page) for c in chunks)
+    index_like = sum("index_like" in noise_reasons(c, start_page, last_page) for c in chunks)
 
     return {
         "total": len(chunks),
@@ -982,7 +1017,7 @@ def validate(chunks):
     }
 
 
-def filter_contamination(chunks):
+def filter_contamination(chunks, start_page=0, last_page=10**9):
     """
     Split chunks into (kept, dropped) based on content-quality heuristics
     (front matter, table-of-contents pages, back-of-book index pages).
@@ -994,14 +1029,7 @@ def filter_contamination(chunks):
     kept, dropped = [], []
 
     for c in chunks:
-        text = c.get("text", "")
-        reasons = []
-        if is_frontmatter(text):
-            reasons.append("frontmatter")
-        if is_toc_like(text):
-            reasons.append("toc_like")
-        if is_index_like(text):
-            reasons.append("index_like")
+        reasons = noise_reasons(c, start_page, last_page)
 
         if reasons:
             dropped.append({"chunk": c, "reasons": reasons})
@@ -1048,7 +1076,8 @@ def process(book_id, cfg):
         cfg["title"],
     )
 
-    kept_chunks, dropped = filter_contamination(chunks)
+    last_page = pages[-1].number if pages else 0
+    kept_chunks, dropped = filter_contamination(chunks, cfg["start"], last_page)
 
     if dropped:
         print(f"\nDropping {len(dropped)} content-quality chunk(s) "
@@ -1056,11 +1085,15 @@ def process(book_id, cfg):
         for d in dropped[:10]:
             c = d["chunk"]
             preview = c["text"].strip().replace("\n", " ")[:100]
-            print(f"  {c['chunk_id']} [{', '.join(d['reasons'])}]: {preview!r}")
+            print(f"  {c['chunk_id']} p{c['page_start']}-{c['page_end']} "
+                  f"[{', '.join(d['reasons'])}]: {preview!r}")
         if len(dropped) > 10:
             print(f"  ... and {len(dropped) - 10} more")
+        # Keep everything that was dropped so it can be eyeballed.
+        save([dict(d["chunk"], drop_reasons=d["reasons"]) for d in dropped],
+             cfg["output"].with_name(f"{book_id}_dropped.jsonl"))
 
-    report = validate(kept_chunks)
+    report = validate(kept_chunks, cfg["start"], last_page)
 
     print(f"\nChunks: {report['total']}")
     print(f"Average words: {report['avg']}")

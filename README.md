@@ -138,34 +138,59 @@ PGPASSWORD=your-secure-password
 
 ## ⚡ Data Pipeline Workflow
 
-### Step 1: Extract Text & Page Markers
-Extract clean text from textbook PDFs:
+### 🚀 All-in-One Master Execution (Recommended)
+Run the entire end-to-end pipeline (PDF extraction ➔ diagram cropping ➔ semantic chunking ➔ vector database embedding ➔ verification test) with a single command:
+
 ```bash
-python scripts/extract_pdf.py
+# Run full pipeline end-to-end
+python main.py
+
+# Check system health, dataset sizes, and database counts
+python main.py --status
+
+# Test semantic search across indexed textbook chunks
+python main.py --query "how does binary search work?"
+
+# Optional: Sync database to AWS RDS PostgreSQL
+python main.py --rds
+
+# Verify bytecode compilation across all Python files
+python main.py --compile-check
 ```
 
-### Step 2: Extract Diagrams and Figures
-Extract diagrams and crop captioned figures from the books:
+---
+
+### 🔧 Individual Step Execution (Optional)
+If you prefer running individual stages separately:
+
+#### Step 1: Extract Text & Page Markers
 ```bash
-python scripts/extract_images.py
+python main.py --extract-text
+# or: python scripts/extract_pdf.py
 ```
 
-### Step 3: Run Contextual Semantic Chunking
-Run the semantic chunker with line de-hyphenation and breadcrumb metadata:
+#### Step 2: Extract Diagrams and Figures
 ```bash
-python scripts/semantic_chunker.py
+python main.py --extract-images
+# or: python scripts/extract_images.py
 ```
 
-### Step 4: Populate the Unified Local Database
-Embed chunks using `sentence-transformers/all-MiniLM-L6-v2` and populate `preppilot.db`:
+#### Step 3: Run Contextual Semantic Chunking
 ```bash
-python scripts/migrate_to_sqlite.py
+python main.py --chunk
+# or: python scripts/semantic_chunker.py
 ```
 
-### Step 5: (Optional) Migrate to AWS RDS PostgreSQL
-Push your local database tables and vector embeddings to AWS RDS:
+#### Step 4: Populate the Unified Local Database
 ```bash
-python scripts/migrate_sqlite_to_rds.py
+python main.py --embed
+# or: python scripts/migrate_to_sqlite.py
+```
+
+#### Step 5: (Optional) Migrate to AWS RDS PostgreSQL
+```bash
+python main.py --rds
+# or: python scripts/migrate_sqlite_to_rds.py
 ```
 
 ---

@@ -182,10 +182,9 @@ def run_stage_2_image_extraction(book_filter: Optional[str] = None, max_pages: O
         extracted = extract_images.process_book(
             book_id=book_id,
             max_pages=max_pages,
-            db_path=DB_PATH,
-            extract_rasters=True,
-            crop_figures=True,
         )
+        if extracted:
+            extract_images.save_metadata_to_db(extracted)
         elapsed = time.time() - t0
         total_extracted += len(extracted)
         print(f"      Extracted {len(extracted)} visual assets in {elapsed:.1f}s")
@@ -248,11 +247,9 @@ def run_stage_4_database_embedding(book_filter: Optional[str] = None, batch_size
     print(f"  Target SQLite DB: {DB_PATH}")
     t0 = time.time()
     try:
-        migrate_to_sqlite.run_pipeline(
-            db_path=DB_PATH,
+        migrate_to_sqlite.migrate(
             book_filter=book_filter,
-            batch_size=batch_size,
-            auto_chunk=False,
+            max_chunks_per_book=None,
         )
         elapsed = time.time() - t0
         print(f"\nStage 4 Complete: Database indexed in {elapsed:.1f}s.")

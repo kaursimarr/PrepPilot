@@ -40,16 +40,4 @@ CPP: 275 old chunks -> 2184 new chunks
   chunks still containing a spaced-out 'Ch a p t e r': 0
   page gaps > 3 pages (excluded pages count as covered): 0 []
   distinct breadcrumbs: 39
-
-CLRS: 515 old chunks -> 4074 new chunks
-  tokens median/max: 200/236   over 230: 10
-  removed: 1315 running headers, 612 page numbers, 24096 duplicated overlap words, 10692 control chars
-  chunks flagged garbled_math: 1325
-  excluded from the index (see CLRS_excluded.jsonl): 76 reference lists, 0 exercises, 0 chapter outlines, 52 tiny/all-number pieces
-  exercise blocks started (C): 0
-  pieces whose chapter/section label was re-derived from a heading inside them: 446
-  reference-list tails trimmed off prose pieces: 1
-  chunks still starting with a number + capital word: 0
-  chunks still containing a spaced-out 'Ch a p t e r': 0
-  page gaps > 3 pages (excluded pages count as covered): 0 []
-  distinct breadcrumbs: 171
+CLRS: MISSING C:\PranviPandey\preppilot\PrepPilot\chunks_semantic\CLRS_chunks.jsonl

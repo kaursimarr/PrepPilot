@@ -57,14 +57,12 @@ BOOK_TITLES = {
     "CLRS": "Introduction to Algorithms (CLRS)",
 }
 
-
 # =============================================================================
 # 1. LLM CLIENT  (Groq first, Gemini as fallback)
 # =============================================================================
 PROVIDERS = [
     ("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
      os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
-    ("groq-small", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "openai/gpt-oss-20b"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY",
      os.getenv("GEMINI_MODEL", "gemini-2.5-flash")),
 ]
@@ -611,6 +609,302 @@ def _list_chapters(conn, book_id: str):
         "GROUP BY chapter, chapter_title ORDER BY MIN(id)", (book_id.upper(),)).fetchall()
     return [dict(r) for r in rows]
 
+# =============================================================================
+# FLASHCARDS
+# =============================================================================
+
+FLASHCARD_SYSTEM = """
+You are an expert computer science tutor.
+Create concise, high-quality flashcards using ONLY the supplied textbook excerpt.
+
+Rules:
+- Each card tests one concept.
+- Front must be a clear question, prompt, or concept.
+- Back must be accurate, concise, and understandable.
+- Include definitions, conceptual understanding, comparisons, or important facts.
+- Do not introduce information not present in the excerpt.
+- Avoid duplicate cards.
+- Do not create trivial cards.
+- Return valid JSON only.
+
+Format:
+{
+  "flashcards": [
+    {"front": "Question", "back": "Answer"}
+  ]
+}
+"""
+
+
+def _save_flashcards(conn, items):
+    ids = []
+
+    for card in items:
+        cur = conn.execute(
+            """INSERT INTO flashcards (topic_id, chunk_id, front, back)
+               VALUES (NULL, ?, ?, ?)""",
+            (card["chunk_id"], card["front"], card["back"])
+        )
+        ids.append(cur.lastrowid)
+
+    conn.commit()
+    return ids
+
+
+def generate_flashcards(book_id, chapter, count):
+    n_chunks = max(2, count // 3 + 2)
+
+    chunks = run_db(_pick_chunks, book_id, chapter, n_chunks)
+
+    if not chunks:
+        return {
+            "requested": count,
+            "saved": 0,
+            "flashcards": [],
+            "message": "No suitable textbook chunks found."
+        }
+
+    saved = []
+    errors = []
+
+    for ch in chunks:
+        if len(saved) >= count:
+            break
+
+        want = min(5, count - len(saved))
+
+        try:
+            raw = llm_json(
+                [
+                    {"role": "system", "content": FLASHCARD_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Create {want} flashcards from this excerpt:\n\n"
+                            f"<excerpt>\n{ch['text']}\n</excerpt>"
+                        )
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=2000
+            )
+
+            cards = raw.get("flashcards", [])
+
+            cleaned = []
+            for card in cards:
+                front = str(card.get("front", "")).strip()
+                back = str(card.get("back", "")).strip()
+
+                if not front or not back:
+                    continue
+
+                if len(front) > 1000 or len(back) > 3000:
+                    continue
+
+                cleaned.append({
+                    "front": front,
+                    "back": back,
+                    "chunk_id": ch["chunk_id"]
+                })
+
+            ids = run_db(_save_flashcards, cleaned)
+
+            for card_id, card in zip(ids, cleaned):
+                saved.append({
+                    "id": card_id,
+                    "front": card["front"],
+                    "back": card["back"],
+                    "chunk_id": card["chunk_id"],
+                    "book_id": ch["book_id"],
+                    "chapter": str(ch["chapter"] or ""),
+                    "chapter_title": ch["chapter_title"],
+                    "section": ch["section"],
+                    "page_start": ch["page_start"]
+                })
+
+        except Exception as e:
+            errors.append(str(e)[:200])
+
+    return {
+        "requested": count,
+        "saved": len(saved),
+        "errors": errors,
+        "flashcards": saved
+    }
+
+
+def _list_flashcards(conn, book_id, chapter, limit):
+    where = ["1=1"]
+    params = []
+
+    if book_id:
+        where.append("c.book_id = ?")
+        params.append(book_id.upper())
+
+    if chapter:
+        where.append("CAST(c.chapter AS TEXT) = ?")
+        params.append(str(chapter).strip())
+
+    rows = conn.execute(
+        """
+        SELECT f.id, f.front, f.back, f.chunk_id,
+               c.book_id, c.chapter, c.chapter_title,
+               c.section, c.page_start
+        FROM flashcards f
+        LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
+        WHERE """ + " AND ".join(where) +
+        " ORDER BY f.id DESC LIMIT ?",
+        params + [limit]
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def _get_due_flashcards(conn, student_id, book_id, chapter, limit):
+    where = [
+        "(s.due_date IS NULL OR date(s.due_date) <= date('now'))"
+    ]
+    params = [student_id]
+
+    if book_id:
+        where.append("c.book_id = ?")
+        params.append(book_id.upper())
+
+    if chapter:
+        where.append("CAST(c.chapter AS TEXT) = ?")
+        params.append(str(chapter).strip())
+
+    rows = conn.execute(
+        """
+        SELECT f.id, f.front, f.back, f.chunk_id,
+               c.book_id, c.chapter, c.chapter_title,
+               c.section, c.page_start,
+               COALESCE(s.ease, 2.5) AS ease,
+               COALESCE(s.interval_days, 0) AS interval_days,
+               COALESCE(s.reps, 0) AS reps,
+               s.due_date
+        FROM flashcards f
+        LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
+        LEFT JOIN student_cards s
+            ON s.card_id = f.id AND s.student_id = ?
+        WHERE """ + " AND ".join(where) +
+        " ORDER BY COALESCE(s.due_date, '1970-01-01'), f.id LIMIT ?",
+        params + [limit]
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def _review_flashcard(conn, student_id, card_id, rating):
+    row = conn.execute(
+        """
+        SELECT ease, interval_days, reps
+        FROM student_cards
+        WHERE student_id = ? AND card_id = ?
+        """,
+        (student_id, card_id)
+    ).fetchone()
+
+    ease = row["ease"] if row else 2.5
+    interval = row["interval_days"] if row else 0
+    reps = row["reps"] if row else 0
+
+    if rating == "again":
+        reps = 0
+        interval = 1
+        ease = max(1.3, ease - 0.2)
+
+    else:  # know
+        reps += 1
+
+        if reps == 1:
+            interval = 1
+        elif reps == 2:
+            interval = 3
+        else:
+            interval = max(1, round(interval * ease))
+
+        ease = min(3.0, ease + 0.1)
+
+    due_date = conn.execute(
+    "SELECT date('now', ?)",
+    (f"+{interval} days",)
+    ).fetchone()[0]
+
+    conn.execute(
+        """
+        INSERT INTO student_cards
+            (student_id, card_id, ease, interval_days, reps, due_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(student_id, card_id)
+        DO UPDATE SET
+            ease = excluded.ease,
+            interval_days = excluded.interval_days,
+            reps = excluded.reps,
+            due_date = excluded.due_date
+        """,
+        (student_id, card_id, ease, interval, reps, due_date)
+    )
+
+    conn.commit()
+
+    return {
+        "card_id": card_id,
+        "rating": rating,
+        "ease": round(ease, 2),
+        "interval_days": interval,
+        "reps": reps,
+        "due_date": due_date
+    }
+
+
+def _flashcard_stats(conn, student_id, book_id=None):
+    params = [student_id]
+    book_filter = ""
+
+    if book_id:
+        book_filter = "AND c.book_id = ?"
+        params.append(book_id.upper())
+
+    total = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM flashcards f
+        LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
+        WHERE 1=1 """ + book_filter,
+        params[1:] if book_id else []
+    ).fetchone()[0]
+
+    reviewed = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM student_cards s
+        JOIN flashcards f ON f.id = s.card_id
+        LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
+        WHERE s.student_id = ? """ + book_filter,
+        params
+    ).fetchone()[0]
+
+    due = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM flashcards f
+        LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
+        LEFT JOIN student_cards s
+            ON s.card_id = f.id AND s.student_id = ?
+        WHERE (s.due_date IS NULL OR date(s.due_date) <= date('now'))
+        """ + book_filter,
+        params
+    ).fetchone()[0]
+
+    return {
+        "total": total,
+        "reviewed": reviewed,
+        "due": due,
+        "new": total - reviewed
+    }
+
 
 # =============================================================================
 # 6. API ENDPOINTS
@@ -683,3 +977,94 @@ def questions(book_id: Optional[str] = None, chapter: Optional[str] = None, qtyp
               limit: int = 20, include_answers: bool = True):
     """Verified questions from the question bank."""
     return run_db(_list_questions, book_id, chapter, qtype, min(max(limit, 1), 200), include_answers)
+
+# =============================================================================
+# FLASHCARD API ENDPOINTS
+# =============================================================================
+
+class GenerateFlashcardsIn(BaseModel):
+    book_id: Optional[str] = None
+    chapter: Optional[str] = None
+    count: int = Field(10, ge=1, le=30)
+
+
+class ReviewFlashcardIn(BaseModel):
+    student_id: str = "default"
+    rating: Literal["again", "know"]
+
+
+@app.post("/generate/flashcards")
+def generate_flashcards_endpoint(body: GenerateFlashcardsIn):
+    try:
+        return generate_flashcards(
+            body.book_id,
+            body.chapter,
+            body.count
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/flashcards")
+def flashcards(
+    book_id: Optional[str] = None,
+    chapter: Optional[str] = None,
+    limit: int = 100
+):
+    return run_db(
+        _list_flashcards,
+        book_id,
+        chapter,
+        min(max(limit, 1), 500)
+    )
+
+
+@app.get("/flashcards/due")
+def flashcards_due(
+    student_id: str = "default",
+    book_id: Optional[str] = None,
+    chapter: Optional[str] = None,
+    limit: int = 100
+):
+    return run_db(
+        _get_due_flashcards,
+        student_id,
+        book_id,
+        chapter,
+        min(max(limit, 1), 500)
+    )
+
+
+@app.post("/flashcards/{card_id}/review")
+def review_flashcard_endpoint(
+    card_id: int,
+    body: ReviewFlashcardIn
+):
+    exists = run_db(
+        lambda conn: conn.execute(
+            "SELECT 1 FROM flashcards WHERE id = ?",
+            (card_id,)
+        ).fetchone()
+    )
+
+    if not exists:
+        raise HTTPException(status_code=404, detail="Flashcard not found")
+
+    return run_db(
+        _review_flashcard,
+        body.student_id,
+        card_id,
+        body.rating
+    )
+
+
+@app.get("/flashcards/stats")
+def flashcard_stats(
+    student_id: str = "default",
+    book_id: Optional[str] = None
+):
+    return run_db(
+        _flashcard_stats,
+        student_id,
+        book_id
+    )

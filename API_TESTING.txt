@@ -1,0 +1,173 @@
+PREPPILOT API - MANUAL TEST PLAN
+=================================
+
+Covers the new backend features:
+  1. Hybrid search          POST /search
+  2. Q&A with citations     POST /ask
+  3. AI question generator  POST /generate/questions   (+ GET /books/{id}/chapters for the dropdown)
+  4. Question bank          GET  /questions
+Plus a health check (GET /health).
+
+Time needed: about 15 minutes. Tests 3 and 4 call a free LLM, so do not spam them.
+
+
+0. SETUP
+--------
+  a) preppilot.db and extracted_images/ must be in the project root (next to api.py).
+  b) .env must contain GROQ_API_KEY=... (or GEMINI_API_KEY=...). See .env.example.
+  c) Install and start (from the project root):
+         pip install -r requirements.txt
+         python -m uvicorn api:app --reload
+     Wait for "Application startup complete". First start takes 10-20 s.
+  d) Open  http://127.0.0.1:8000/docs
+     The page title must show version 0.3.0 and list 6 endpoints.
+     (Shows 0.1.0? An old server is still running. Stop it or use --port 8001.)
+
+HOW TO RUN A TEST IN /docs
+  Click the endpoint -> "Try it out" -> edit the body/parameters -> "Execute" -> read "Response body".
+  Never leave Swagger's placeholder value "string" in a field. Replace it or delete that line.
+
+
+TEST 1 - GET /health
+--------------------
+Run it.
+EXPECT:  {"status":"ok","chunks":12864,"keyword_search":true,"llm_keys":{"groq":true,...}}
+  [ ] status is "ok"
+  [ ] chunks is 12864
+  [ ] keyword_search is true
+  [ ] llm_keys shows true for the key you configured
+
+
+TEST 2 - POST /search  (hybrid search)
+--------------------------------------
+2a. Body:
+      {"question": "What is a binary search tree?", "top_k": 5}
+    EXPECT:
+      [ ] exactly 5 results
+      [ ] all results come from CLRS Chapter 12 "Binary Search Trees" (a DS tree chapter is also acceptable)
+      [ ] CLRS section 12.1 "What is a binary search tree?" is in the top 3
+      [ ] "found_by" is "vector+keyword" for most results
+      [ ] each result has book, chapter, pages, similarity, location, image_paths
+
+2b. Body:
+      {"question": "How does pointer arithmetic work in C?", "top_k": 5}
+    EXPECT:
+      [ ] results are about pointers (C++ Reference "Pointers" chapter and/or Let Us C "Pointers and Arrays")
+      [ ] pointer arithmetic text (adding/subtracting integers to a pointer) appears in the top 3
+
+2c. Body:
+      {"question": "What is the difference between call by value and call by reference?", "top_k": 5}
+    EXPECT:
+      [ ] Let Us C chapter 5 "Call by Value and Call by Reference" is in the top 3
+
+2d. Book filter. Body:
+      {"question": "What is a hash table?", "top_k": 5, "book_id": "CLRS"}
+    EXPECT:
+      [ ] every result has "book_id": "CLRS"
+      [ ] results are from CLRS Chapter 11 "Hash Tables"
+
+
+TEST 3 - POST /ask  (answer with citations)
+-------------------------------------------
+3a. Body:
+      {"question": "What is a binary search tree?", "top_k": 5}
+    EXPECT:
+      [ ] "used_llm": true
+      [ ] "answer" defines a BST: nodes with key, left, right, parent pointers, and the binary-search-tree property
+          (left subtree keys <= node key <= right subtree keys)
+      [ ] the answer contains citations like [2] [3]
+      [ ] "cited" lists the same numbers, and those entries in "sources" have "cited": true
+      [ ] each source has a "location" such as "Introduction to Algorithms (CLRS) > Chapter 12 ... > p. 308"
+
+3b. Question that is NOT in the textbooks. Body:
+      {"question": "Who won the 2018 football world cup?", "top_k": 5}
+    EXPECT:
+      [ ] the API does NOT invent an answer. Either "used_llm": false with a "couldn't find anything" message,
+          or an answer that says the excerpts do not cover it
+
+3c. Book filter. Body:
+      {"question": "How does malloc work?", "top_k": 4, "book_id": "C"}
+    EXPECT:
+      [ ] all sources are from "Let Us C"
+
+
+TEST 4 - GET /books/{book_id}/chapters
+--------------------------------------
+Parameter book_id = CLRS
+EXPECT:
+  [ ] list of 35 chapters, e.g. {"chapter":"12","chapter_title":"Binary Search Trees","chunks":64}
+Repeat with DS, C, CPP: each returns its own chapter list (roughly 64, 21 and 40 chapters).
+
+
+TEST 5 - POST /generate/questions  (AI question generator)
+----------------------------------------------------------
+Each call takes 20-60 seconds (two LLM calls per source chunk). Wait for the response.
+
+5a. MCQ. Body:
+      {"book_id": "CLRS", "chapter": "12", "qtype": "mcq", "count": 4, "difficulty": "medium"}
+    EXPECT:
+      [ ] "saved" is between 1 and 4, "errors" is []
+      [ ] every question has exactly 4 "options" and an "answer" letter A-D
+      [ ] the answer letter points to the option that is actually correct (check against the textbook)
+      [ ] answers are NOT all the same letter (options are shuffled)
+      [ ] the words "excerpt" or "passage" do not appear in any question
+      [ ] each question has chunk_id, book_id, chapter, section, page_start (its source in the textbook)
+
+5b. Short answer. Body:
+      {"book_id": "C", "chapter": "5", "qtype": "short", "count": 3, "difficulty": "medium"}
+    EXPECT:
+      [ ] "options" is null; "answer" is a 2-3 sentence model answer matching the book
+      [ ] marks = 2
+
+5c. Long answer. Body:
+      {"book_id": "CLRS", "chapter": "15", "qtype": "long", "count": 2, "difficulty": "hard"}
+    EXPECT:
+      [ ] "answer" is a longer model answer (about 5-8 sentences); marks = 5
+
+5d. Bad input handling. Body:
+      {"book_id": "NOPE", "qtype": "mcq", "count": 2}
+    EXPECT:
+      [ ] "saved": 0 and a message "No suitable chunks found for that book/chapter."
+
+NOTES
+  - "saved" can be lower than "count": questions that fail verification are discarded (see "rejected").
+  - A 429 / rate-limit text in "errors" means the free LLM quota is used up. Wait a minute and retry.
+
+
+TEST 6 - GET /questions  (question bank)
+----------------------------------------
+6a. Parameters: book_id = CLRS, chapter = 12, qtype = mcq, limit = 10, include_answers = true
+    EXPECT:
+      [ ] the questions created in test 5a, newest first
+      [ ] "options" is a list (not a string); there is no "options_json" field
+
+6b. Same, but include_answers = false
+    EXPECT:
+      [ ] the "answer" and "explanation" fields are missing (safe to show to a student taking a quiz)
+
+6c. Parameters: book_id = DS
+    EXPECT:
+      [ ] empty list [] (no DS questions generated yet). This is correct, not an error.
+
+
+TEST 7 - ERROR HANDLING
+-----------------------
+7a. Stop the server, remove the keys from .env, restart, run POST /ask.
+    EXPECT:  HTTP 502 with a readable message ("No API key found...") - not a bare "Internal Server Error".
+    (Put the keys back and restart afterwards.)
+
+7b. POST /search with {"question": "hi"}  (fewer than 3 characters would be rejected; "hi" is 2)
+    EXPECT:  HTTP 422 validation error.
+
+
+RESULT SHEET
+------------
+  Tester: ______________   Date: ____________
+  Test 1 health ......... PASS / FAIL
+  Test 2 search ......... PASS / FAIL     (2a  2b  2c  2d)
+  Test 3 ask ............ PASS / FAIL     (3a  3b  3c)
+  Test 4 chapters ....... PASS / FAIL
+  Test 5 generator ...... PASS / FAIL     (5a  5b  5c  5d)
+  Test 6 question bank .. PASS / FAIL     (6a  6b  6c)
+  Test 7 errors ......... PASS / FAIL
+  Notes / bugs found: ______________________________________________

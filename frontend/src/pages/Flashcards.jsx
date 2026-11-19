@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BookOpen, Brain, Check, ChevronLeft, ChevronRight, CircleHelp, Clock3,
-  Flame, Layers3, LoaderCircle, RotateCcw, Sparkles, ThumbsDown, ThumbsUp,
+  Layers3, LoaderCircle, RotateCcw, Sparkles, ThumbsDown, ThumbsUp,
 } from 'lucide-react'
 import '../flashcards.css'
 

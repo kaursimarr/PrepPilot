@@ -35,7 +35,7 @@ def get_connection(db_path: Optional[Union[str, Path]] = None) -> sqlite3.Connec
     path = Path(db_path or DEFAULT_DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(path), timeout=10.0)
+    conn = sqlite3.connect(str(path), timeout=10.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
 
     # Performance and concurrency pragmas

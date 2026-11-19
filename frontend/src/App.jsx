@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
 import Flashcards from './pages/Flashcards'
+import AdaptiveQuiz from './pages/AdaptiveQuiz'
+import SyllabusIntelligence from './pages/SyllabusIntelligence'
+import PrerequisiteEngine from './pages/PrerequisiteEngine'
+import MockExam from './pages/MockExam'
 import {
   LayoutDashboard, BookOpen, Bot, ClipboardList, ChartNoAxesCombined, Library,
   Layers3, Settings, Search, Bell, ChevronDown, Clock3, Flame, Target,
-  ArrowUpRight, Play, Send, Sparkles, CheckCircle2, Menu, X,
-  LoaderCircle, RefreshCw, ChevronLeft, BookMarked, Save, Cpu
+  ArrowUpRight, ArrowRight, Play, Send, Sparkles, CheckCircle2, Menu, X,
+  LoaderCircle, RefreshCw, ChevronLeft, ChevronRight, BookMarked, Save, Cpu, Zap, GraduationCap,
+  GitFork, FileText, Sun, Moon
 } from 'lucide-react'
+import './workspace.css'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid } from 'recharts'
 import {
   getHealth, askQuestion, getChapters, getQuestions, generateQuestions,
@@ -15,15 +21,15 @@ import {
 } from './api'
 
 const fallbackSubjects = [
-  { code: 'CLRS', name: 'Design & Analysis of Algorithms', book_title: 'Introduction to Algorithms (CLRS)', progress: 75, color: 'blue', next: 'Red-Black Trees & Dynamic Programming', chapters: '35 chapters', chunks: 4077 },
-  { code: 'DS', name: 'Advanced Data Structures', book_title: 'Handbook of Data Structures and Applications', progress: 68, color: 'violet', next: 'Self-Balancing Trees & Heaps', chapters: '64 chapters', chunks: 5651 },
-  { code: 'C', name: 'C Programming & Systems', book_title: 'Let Us C (Yashavant Kanetkar)', progress: 88, color: 'cyan', next: 'Pointers, Memory & Structures', chapters: '19 chapters', chunks: 955 },
-  { code: 'CPP', name: 'Object-Oriented Software Design (C++)', book_title: 'C++: The Complete Reference', progress: 62, color: 'orange', next: 'Runtime Polymorphism & STL', chapters: '39 chapters', chunks: 2184 },
+  { code: 'CLRS', name: 'Design & Analysis of Algorithms', book_title: 'Introduction to Algorithms (CLRS)', progress: 0, color: 'blue', next: 'Red-Black Trees & Dynamic Programming', chapters: '35 chapters', chunks: 4074 },
+  { code: 'DS', name: 'Advanced Data Structures', book_title: 'Handbook of Data Structures and Applications', progress: 0, color: 'violet', next: 'Self-Balancing Trees & Heaps', chapters: '64 chapters', chunks: 5651 },
+  { code: 'C', name: 'C Programming & Systems', book_title: 'Let Us C (Yashavant Kanetkar)', progress: 0, color: 'cyan', next: 'Pointers, Memory & Structures', chapters: '19 chapters', chunks: 955 },
+  { code: 'CPP', name: 'Object-Oriented Software Design (C++)', book_title: 'C++: The Complete Reference', progress: 0, color: 'orange', next: 'Runtime Polymorphism & STL', chapters: '39 chapters', chunks: 2184 },
 ]
 
 const fallbackActivity = [
-  { day: 'Mon', score: 45 }, { day: 'Tue', score: 62 }, { day: 'Wed', score: 55 },
-  { day: 'Thu', score: 78 }, { day: 'Fri', score: 68 }, { day: 'Sat', score: 88 }, { day: 'Sun', score: 82 }
+  { day: 'Mon', score: 0 }, { day: 'Tue', score: 0 }, { day: 'Wed', score: 0 },
+  { day: 'Thu', score: 0 }, { day: 'Fri', score: 0 }, { day: 'Sat', score: 0 }, { day: 'Sun', score: 0 }
 ]
 
 const defaultQuizQuestions = [
@@ -101,7 +107,11 @@ const ROUTE_MAP = {
   'subjects': 'My Subjects',
   'assistant': 'AI Study Assistant',
   'practice': 'Practice & Quizzes',
+  'adaptive': 'Adaptive Quiz',
   'flashcards': 'Flashcards',
+  'syllabus': 'Syllabus',
+  'prerequisites': 'Prerequisites',
+  'mock': 'Mock Exams',
   'progress': 'My Progress',
   'resources': 'Study Resources',
   'settings': 'Settings',
@@ -112,7 +122,11 @@ const PAGE_TO_ROUTE = {
   'My Subjects': 'subjects',
   'AI Study Assistant': 'assistant',
   'Practice & Quizzes': 'practice',
+  'Adaptive Quiz': 'adaptive',
   'Flashcards': 'flashcards',
+  'Syllabus': 'syllabus',
+  'Prerequisites': 'prerequisites',
+  'Mock Exams': 'mock',
   'My Progress': 'progress',
   'Study Resources': 'resources',
   'Settings': 'settings',
@@ -127,31 +141,62 @@ function getInitialPage() {
 }
 
 function App() {
-  const [theme, setTheme] = useState(() => localStorage.getItem('preppilot-theme') || 'midnight')
-  useEffect(() => { localStorage.setItem('preppilot-theme', theme) }, [theme])
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('preppilot-theme')
+    if (saved === 'light') return 'obsidian-light'
+    if (saved === 'midnight') return 'royal-navy'
+    if (saved === 'ocean') return 'titanium-jade'
+    const valid = ['obsidian-gold', 'obsidian-light', 'royal-navy', 'royal-light', 'titanium-jade', 'titanium-light']
+    return valid.includes(saved) ? saved : 'obsidian-gold'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('preppilot-theme', theme)
+    document.body.className = `theme-${theme}`
+    document.body.setAttribute('data-theme', theme)
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
+
+  const isLightMode = theme.endsWith('-light')
+
+  const toggleLightDark = () => {
+    if (isLightMode) {
+      if (theme === 'obsidian-light') setTheme('obsidian-gold')
+      else if (theme === 'royal-light') setTheme('royal-navy')
+      else if (theme === 'titanium-light') setTheme('titanium-jade')
+      else setTheme('obsidian-gold')
+    } else {
+      if (theme === 'obsidian-gold') setTheme('obsidian-light')
+      else if (theme === 'royal-navy') setTheme('royal-light')
+      else if (theme === 'titanium-jade') setTheme('titanium-light')
+      else setTheme('obsidian-light')
+    }
+  }
 
   const [page, setPage] = useState(getInitialPage)
   const [mobile, setMobile] = useState(false)
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('preppilot-sidebar-collapsed') === 'true')
+  useEffect(() => { localStorage.setItem('preppilot-sidebar-collapsed', String(collapsed)) }, [collapsed])
   const [query, setQuery] = useState('')
 
   // 1. Backend Health & Overview State
-  const [health, setHealth] = useState({ status: 'connecting', chunks: 12867, keyword_search: true })
+  const [health, setHealth] = useState({ status: 'connecting', chunks: 12864, keyword_search: true })
   const [overviewStats, setOverviewStats] = useState({
-    chunks_indexed: 12867,
-    total_quizzes: 18,
-    quiz_accuracy: 74,
-    topics_mastered: 29,
-    total_topics: 45,
-    overall_progress: 74,
+    chunks_indexed: 12864,
+    books_count: 4,
+    total_chapters: 157,
+    total_quizzes: 0,
+    total_questions_answered: 0,
+    total_correct: 0,
+    quiz_accuracy: 0.0,
+    topics_mastered: 0,
+    total_topics: 157,
+    overall_progress: 0.0,
     flashcards_total: 0,
     flashcards_due: 0,
-    study_streak_days: 4,
-    study_time_hours: 12.5,
-    focus_areas: [
-      { name: 'Dynamic Programming', score: 43, color: 'violet' },
-      { name: 'Graph Algorithms', score: 52, color: 'blue' },
-      { name: 'Red-Black Trees', score: 68, color: 'cyan' },
-    ],
+    study_streak_days: 0,
+    study_time_hours: 0.0,
+    focus_areas: [],
     activity: fallbackActivity,
   })
 
@@ -307,6 +352,10 @@ function App() {
     ['My Subjects', BookOpen],
     ['AI Study Assistant', Bot],
     ['Practice & Quizzes', ClipboardList],
+    ['Adaptive Quiz', Zap],
+    ['Syllabus', GraduationCap],
+    ['Prerequisites', GitFork],
+    ['Mock Exams', FileText],
     ['Flashcards', Layers3],
     ['My Progress', ChartNoAxesCombined],
     ['Study Resources', Library]
@@ -491,65 +540,98 @@ function App() {
 
   return (
     <div className={`app-shell theme-${theme}`} data-theme={theme}>
-      <aside className={`sidebar ${mobile ? 'show' : ''}`}>
-        <div
-          className="brand"
-          onClick={() => go('Overview')}
-          style={{ cursor: 'pointer' }}
-          title="Return to Workspace Overview"
-        >
-          <div className="brand-mark"><Sparkles size={21} /></div>
-          <div><b>PrepPilot</b><span>YOUR AI STUDY COMPANION</span></div>
+      <aside className={`sidebar floating-nav ${collapsed ? 'collapsed' : ''} ${mobile ? 'show' : ''}`}>
+        <div className="floating-nav-header">
+          <div
+            className="brand"
+            onClick={() => go('Overview')}
+            style={{ cursor: 'pointer' }}
+            title="Return to Workspace Overview"
+          >
+            <div className="brand-mark"><Sparkles size={20} /></div>
+            {!collapsed && (
+              <div className="brand-text">
+                <b>PrepPilot</b>
+                <span>AI STUDY COMPANION</span>
+              </div>
+            )}
+          </div>
+          <button
+            className="collapse-toggle-btn"
+            onClick={() => setCollapsed(!collapsed)}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            type="button"
+          >
+            {collapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+          </button>
           <button className="mobile-close" onClick={() => setMobile(false)}><X size={18} /></button>
         </div>
 
-        <div
-          className="workspace-label"
-          onClick={() => go('Overview')}
-          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
-          title="Go to Workspace"
-        >
-          WORKSPACE
-        </div>
+        {!collapsed && (
+          <div
+            className="workspace-label"
+            onClick={() => go('Overview')}
+            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+            title="Go to Workspace"
+          >
+            WORKSPACE
+          </div>
+        )}
 
-        <nav>
+        <nav className="floating-nav-menu">
           {nav.map(([label, Icon]) => (
             <button
               key={label}
               className={`nav-item ${page === label ? 'active' : ''}`}
               onClick={() => go(label)}
+              title={label}
             >
-              <Icon size={18} />
-              <span>{label}</span>
-              {label === 'AI Study Assistant' && <i className="new-dot" />}
+              <Icon size={18} className="nav-icon" />
+              {!collapsed && <span className="nav-text">{label}</span>}
+              {!collapsed && label === 'AI Study Assistant' && <i className="new-dot" />}
             </button>
           ))}
         </nav>
 
         <div className="sidebar-bottom">
-          <div className="streak-card">
-            <div className="streak-icon"><Flame size={17} /></div>
-            <div>
-              <b>{overviewStats.chunks_indexed.toLocaleString()} chunks</b>
-              <span>Hybrid Search Vector DB</span>
+          {!collapsed ? (
+            <div className="streak-card">
+              <div className="streak-icon"><Flame size={17} /></div>
+              <div>
+                <b>{overviewStats.chunks_indexed.toLocaleString()} chunks</b>
+                <span>SQLite Hybrid DB</span>
+              </div>
             </div>
-          </div>
-          <button className="nav-item" onClick={() => go('Settings')}><Settings size={18} />Settings</button>
-          <div className="profile" onClick={() => go('Settings')} style={{ cursor: 'pointer' }}>
+          ) : (
+            <div className="streak-icon mini" title={`${overviewStats.chunks_indexed.toLocaleString()} chunks in DB`}>
+              <Flame size={16} />
+            </div>
+          )}
+
+          <button className="nav-item" onClick={() => go('Settings')} title="Settings">
+            <Settings size={18} className="nav-icon" />
+            {!collapsed && <span className="nav-text">Settings</span>}
+          </button>
+
+          <div className={`profile ${collapsed ? 'collapsed' : ''}`} onClick={() => go('Settings')} style={{ cursor: 'pointer' }} title={profile.name}>
             <div className="avatar">PP</div>
-            <div>
-              <b>{profile.name}</b>
-              <span>{profile.institution} · {profile.semester}</span>
-            </div>
-            <ChevronDown size={16} />
+            {!collapsed && (
+              <>
+                <div>
+                  <b>{profile.name}</b>
+                  <span>{profile.institution} · {profile.semester}</span>
+                </div>
+                <ChevronDown size={14} />
+              </>
+            )}
           </div>
         </div>
       </aside>
 
       {mobile && <div className="scrim" onClick={() => setMobile(false)} />}
 
-      <main className="main-area">
-        <header className="topbar">
+      <main className={`main-area ${collapsed ? 'expanded-content' : ''}`}>
+        <header className="topbar floating-topbar">
           <button className="mobile-menu" onClick={() => setMobile(true)}><Menu /></button>
           
           {/* Interactive Clickable Breadcrumb */}
@@ -586,6 +668,15 @@ function App() {
               />
               <kbd>↵</kbd>
             </div>
+            <button
+              className="theme-mode-toggle-btn"
+              onClick={toggleLightDark}
+              title={isLightMode ? "Switch to Dark Mode" : "Switch to Light Mode"}
+              type="button"
+            >
+              {isLightMode ? <Moon size={15} /> : <Sun size={15} />}
+              <span className="theme-mode-text">{isLightMode ? 'Light' : 'Dark'}</span>
+            </button>
             <div className={`select-pill ${health.status === 'ok' ? '' : 'attention-label'}`}>
               <i className={health.status === 'ok' ? 'online-dot' : ''} />
               {health.status === 'ok' ? 'Backend Live' : 'Connecting'}
@@ -604,7 +695,9 @@ function App() {
               <div className="welcome-row">
                 <div>
                   <div className="eyebrow">PREPPILOT LEARNING SYSTEM</div>
-                  <h1>Good morning, {profile.name} <span>✦</span></h1>
+                  <h1>
+                    {new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening'}, {profile.name} <span>✦</span>
+                  </h1>
                   <p>Textbook library indexed with {overviewStats.chunks_indexed.toLocaleString()} passages across 4 curriculum books.</p>
                 </div>
                 <button className="primary-btn" onClick={() => go('AI Study Assistant')}>
@@ -613,15 +706,44 @@ function App() {
               </div>
 
               <div className="stats-grid">
-                <Stat icon={BookOpen} label="Textbook Passages" value={overviewStats.chunks_indexed.toLocaleString()} sub="In SQLite Vector DB" trend="Hybrid Search Active" />
-                <Stat icon={Target} label="Quiz Accuracy" value={`${overviewStats.quiz_accuracy}%`} sub={`Across ${overviewStats.total_quizzes} attempts`} trend="+8.2% this week" />
-                <Stat icon={Flame} label="Study Streak" value={`${overviewStats.study_streak_days} days`} sub="Personal best: 12 days" trend="You're on a roll!" />
-                <Stat icon={CheckCircle2} label="Topics Mastered" value={`${overviewStats.topics_mastered}`} sub={`Out of ${overviewStats.total_topics} topics`} trend="5 mastered this week" />
+                <Stat
+                  icon={BookOpen}
+                  label="Textbook Passages"
+                  value={overviewStats.chunks_indexed.toLocaleString()}
+                  sub="In SQLite Vector DB"
+                  trend="Hybrid Search Active"
+                />
+                <Stat
+                  icon={Target}
+                  label="Quiz Accuracy"
+                  value={`${overviewStats.quiz_accuracy}%`}
+                  sub={`Across ${overviewStats.total_questions_answered || overviewStats.total_quizzes} attempts`}
+                  trend={`${overviewStats.total_correct || 0} Correct Answers`}
+                />
+                <Stat
+                  icon={Flame}
+                  label="Study Streak"
+                  value={`${overviewStats.study_streak_days} days`}
+                  sub={`${overviewStats.study_time_hours || 0.1}h logged`}
+                  trend="You're on a roll!"
+                />
+                <Stat
+                  icon={CheckCircle2}
+                  label="Topics Mastered"
+                  value={`${overviewStats.topics_mastered}`}
+                  sub={`Out of ${overviewStats.total_topics || 157} topics`}
+                  trend={`${overviewStats.overall_progress}% curriculum unlocked`}
+                />
               </div>
 
               <div className="section-heading">
-                <div><h2>Your Course Curriculum</h2><p>Live course metrics from your indexed textbooks</p></div>
-                <button className="text-btn" onClick={() => go('My Subjects')}>View all subjects <ArrowUpRight size={15} /></button>
+                <div>
+                  <h2>Your Course Curriculum</h2>
+                  <p>Live course metrics from your indexed textbooks</p>
+                </div>
+                <button className="text-btn" onClick={() => go('My Subjects')}>
+                  View all subjects <ArrowUpRight size={15} />
+                </button>
               </div>
 
               <div className="subject-grid">
@@ -652,23 +774,26 @@ function App() {
               <div className="lower-grid">
                 <div className="panel">
                   <div className="panel-heading">
-                    <div><h2>Study Activity</h2><p>Weekly learning frequency</p></div>
+                    <div>
+                      <h2>Study Activity</h2>
+                      <p>Weekly learning frequency</p>
+                    </div>
                     <span className="select-pill">This week <ChevronDown size={14} /></span>
                   </div>
                   <div className="chart-wrap">
                     <ResponsiveContainer width="100%" height={210}>
-                      <AreaChart data={overviewStats.activity || fallbackActivity}>
+                      <AreaChart data={overviewStats.activity && overviewStats.activity.length ? overviewStats.activity : fallbackActivity}>
                         <defs>
                           <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#7188ff" stopOpacity={0.3} />
-                            <stop offset="100%" stopColor="#7188ff" stopOpacity={0} />
+                            <stop offset="0%" stopColor="var(--primary)" stopOpacity={0.3} />
+                            <stop offset="100%" stopColor="var(--primary)" stopOpacity={0} />
                           </linearGradient>
                         </defs>
-                        <CartesianGrid stroke="#202a40" vertical={false} />
-                        <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#8190aa', fontSize: 12 }} />
+                        <CartesianGrid stroke="var(--card-border)" vertical={false} />
+                        <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: 'var(--text-muted)', fontSize: 12 }} />
                         <YAxis hide />
-                        <Tooltip contentStyle={{ background: '#151e31', border: '1px solid #2b3851', borderRadius: 10, color: '#fff' }} />
-                        <Area type="monotone" dataKey="score" stroke="#8294ff" strokeWidth={2.5} fill="url(#area)" />
+                        <Tooltip contentStyle={{ background: 'var(--card-bg)', border: '1px solid var(--card-border)', borderRadius: 10, color: 'var(--text-main)' }} />
+                        <Area type="monotone" dataKey="score" stroke="var(--primary)" strokeWidth={2.5} fill="url(#area)" />
                       </AreaChart>
                     </ResponsiveContainer>
                   </div>
@@ -676,24 +801,34 @@ function App() {
 
                 <div className="panel">
                   <div className="panel-heading">
-                    <div><h2>Focus Areas</h2><p>Topics needing reinforcement</p></div>
-                    <span className="attention-label">Needs focus</span>
+                    <div>
+                      <h2>Focus Areas</h2>
+                      <p>Topics needing reinforcement</p>
+                    </div>
+                    <span className="select-pill attention-label">Needs focus</span>
                   </div>
                   <div className="focus-list">
-                    {(overviewStats.focus_areas || []).map((f, fIdx) => (
-                      <div className="focus-item" key={fIdx}>
-                        <div className="focus-line">
+                    {(overviewStats.focus_areas && overviewStats.focus_areas.length > 0 ? overviewStats.focus_areas : [
+                      { name: 'Red-Black Trees Deletion', score: 42, attempts: 12, correct: 5 },
+                      { name: 'Pointers & Dynamic Memory', score: 55, attempts: 9, correct: 5 },
+                      { name: 'Dynamic Programming (Knapsack)', score: 61, attempts: 14, correct: 8 }
+                    ]).map((f, i) => (
+                      <div className="focus-item" key={i}>
+                        <div className="focus-title">
                           <span>{f.name}</span>
                           <b>{f.score}%</b>
                         </div>
-                        <div className="progress-track">
-                          <div className={`progress-fill ${f.color || 'violet'}`} style={{ width: f.score + '%' }} />
+                        <div className="focus-bar">
+                          <div className="focus-fill" style={{ width: `${f.score}%` }} />
+                        </div>
+                        <div className="focus-sub">
+                          {f.attempts > 0 ? `${f.attempts} attempts · ${f.correct} correct` : 'Unattempted concept'}
                         </div>
                       </div>
                     ))}
                   </div>
-                  <button className="wide-btn" style={{ marginTop: '14px' }} onClick={() => go('My Progress')}>
-                    Review Topic Mastery <ArrowUpRight size={15} />
+                  <button className="wide-btn" style={{ marginTop: '16px' }} onClick={() => go('Prerequisites')}>
+                    Review Topic Mastery
                   </button>
                 </div>
               </div>
@@ -1069,25 +1204,34 @@ function App() {
                         <span><BookOpen size={16} /> Textbook grounded</span>
                       </div>
 
-                      <button
-                        className="primary-btn"
-                        onClick={() => startQuizSession(defaultQuizQuestions)}
-                      >
-                        <Play size={16} /> Start Core Practice Quiz
-                      </button>
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                        <button
+                          className="primary-btn"
+                          onClick={() => startQuizSession(defaultQuizQuestions)}
+                        >
+                          <Play size={16} /> Start Core Practice Quiz
+                        </button>
+                        <button
+                          className="primary-btn"
+                          style={{ background: 'linear-gradient(110deg, #8755f2, #a855f7)' }}
+                          onClick={() => go('Adaptive Quiz')}
+                        >
+                          <Zap size={16} /> Try Adaptive Assessment
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>
 
-                <div className="panel">
-                  <h2>Select Textbook Chapter</h2>
-                  <p className="muted">Load questions from the backend or generate fresh sets.</p>
+                <div className="panel" style={{ padding: '16px' }}>
+                  <h2 style={{ fontSize: '15px', fontFamily: "'Manrope', sans-serif" }}>Select Textbook Chapter</h2>
+                  <p className="muted" style={{ fontSize: '11px', marginBottom: '14px' }}>Load questions from the backend or generate fresh sets.</p>
 
-                  <div className="quiz-chapter-row">
+                  <div className="quiz-chapter-row" style={{ gap: '10px' }}>
                     <div>
-                      <label style={{ fontSize: '9px', color: '#8898b3', display: 'block', marginBottom: '6px' }}>TEXTBOOK</label>
+                      <label style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.8px', color: 'var(--text-dim)', display: 'block', marginBottom: '5px' }}>TEXTBOOK</label>
                       <select
-                        style={{ width: '100%', padding: '9px', background: '#172239', color: '#dce4f4', border: '1px solid #2e3c59', borderRadius: '7px' }}
+                        style={{ width: '100%', padding: '7px 10px', background: 'var(--select-bg)', color: 'var(--text-main)', border: '1px solid var(--card-border)', borderRadius: '7px', fontSize: '11px', fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}
                         value={quizBook}
                         onChange={e => setQuizBook(e.target.value)}
                       >
@@ -1099,15 +1243,15 @@ function App() {
                     </div>
 
                     <div>
-                      <label style={{ fontSize: '9px', color: '#8898b3', display: 'block', marginBottom: '6px' }}>CHAPTER</label>
+                      <label style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.8px', color: 'var(--text-dim)', display: 'block', marginBottom: '5px' }}>CHAPTER</label>
                       <select
-                        style={{ width: '100%', padding: '9px', background: '#172239', color: '#dce4f4', border: '1px solid #2e3c59', borderRadius: '7px' }}
+                        style={{ width: '100%', padding: '7px 10px', background: 'var(--select-bg)', color: 'var(--text-main)', border: '1px solid var(--card-border)', borderRadius: '7px', fontSize: '11px', fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}
                         value={quizChapter}
                         onChange={e => setQuizChapter(e.target.value)}
                       >
                         {quizChaptersList.map(c => (
                           <option key={c.chapter} value={c.chapter}>
-                            Ch. {c.chapter}: {c.chapter_title?.slice(0, 20)}...
+                            Ch. {c.chapter}: {c.chapter_title?.slice(0, 24)}...
                           </option>
                         ))}
                       </select>
@@ -1115,7 +1259,7 @@ function App() {
                   </div>
 
                   {quizGenMsg && (
-                    <div style={{ fontSize: '10px', color: '#95abdf', padding: '8px 10px', background: '#16233d', borderRadius: '6px', margin: '12px 0' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--primary)', padding: '7px 10px', background: 'var(--badge-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', margin: '10px 0', fontFamily: "'DM Sans', sans-serif" }}>
                       {quizGenMsg}
                     </div>
                   )}
@@ -1123,6 +1267,7 @@ function App() {
                   <div style={{ display: 'grid', gap: '8px', marginTop: '14px' }}>
                     <button
                       className="primary-btn"
+                      style={{ padding: '8px 14px', fontSize: '11px', fontWeight: 700, gap: '6px' }}
                       disabled={isGeneratingQuiz}
                       onClick={loadChapterQuestions}
                     >
@@ -1132,7 +1277,7 @@ function App() {
                     
                     <button
                       className="back-nav-btn"
-                      style={{ justifyContent: 'center' }}
+                      style={{ justifyContent: 'center', padding: '8px 14px', fontSize: '11px' }}
                       onClick={() => go('Overview')}
                     >
                       <LayoutDashboard size={14} /> Return to Workspace Overview
@@ -1141,6 +1286,29 @@ function App() {
                 </div>
               </div>
             </>
+          )}
+
+          {/* ===================== ADAPTIVE QUIZ ===================== */}
+          {page === 'Adaptive Quiz' && (
+            <AdaptiveQuiz onBackToWorkspace={() => go('Overview')} />
+          )}
+
+          {/* ===================== SYLLABUS INTELLIGENCE ===================== */}
+          {page === 'Syllabus' && (
+            <SyllabusIntelligence onBackToWorkspace={() => go('Overview')} />
+          )}
+
+          {/* ===================== PREREQUISITE ENGINE ===================== */}
+          {page === 'Prerequisites' && (
+            <PrerequisiteEngine
+              onBackToWorkspace={() => go('Overview')}
+              onNavigateToQuiz={() => go('Adaptive Quiz')}
+            />
+          )}
+
+          {/* ===================== FULL MOCK EXAM ===================== */}
+          {page === 'Mock Exams' && (
+            <MockExam onBackToWorkspace={() => go('Overview')} />
           )}
 
           {/* ===================== FLASHCARDS ===================== */}
@@ -1325,34 +1493,80 @@ function App() {
                     <div><h2>Appearance</h2><p className="muted">Choose a comfortable look for your study sessions.</p></div>
                     <span className="appearance-icon"><Sparkles size={18} /></span>
                   </div>
-                  <label>COLOR THEME</label>
-                  <div className="theme-options">
+                  <label>ACADEMIC BRANDING THEME</label>
+                  <div className="theme-options-luxury">
                     {[
-                      { id: 'midnight', name: 'Midnight', desc: 'Original dark blue', swatches: ['#0b1020', '#17243b', '#7c8cff'] },
-                      { id: 'light', name: 'Light', desc: 'Bright and minimal', swatches: ['#f3f6fc', '#ffffff', '#5268df'] },
-                      { id: 'ocean', name: 'Ocean', desc: 'Deep teal tones', swatches: ['#071b22', '#10313a', '#39b9b0'] }
+                      {
+                        id: 'obsidian-gold',
+                        name: 'Obsidian + Champagne Gold',
+                        desc: 'Rich obsidian black with champagne gold (#B08D57)',
+                        tag: 'Dark Mode',
+                        swatches: ['#171717', '#242424', '#B08D57', '#F5EFE3']
+                      },
+                      {
+                        id: 'obsidian-light',
+                        name: 'Champagne Cream (Light)',
+                        desc: 'Warm ivory background (#F8F5EF) with champagne gold',
+                        tag: 'Light Mode',
+                        swatches: ['#F8F5EF', '#FFFFFF', '#B08D57', '#252525']
+                      },
+                      {
+                        id: 'royal-navy',
+                        name: 'Royal Navy + Antique Gold',
+                        desc: 'Deep royal navy (#101B30) with antique gold (#B89555)',
+                        tag: 'Dark Mode',
+                        swatches: ['#101B30', '#18253E', '#B89555', '#D7BD89']
+                      },
+                      {
+                        id: 'royal-light',
+                        name: 'Academic Ivory (Light)',
+                        desc: 'Clean warm paper (#F7F5F0) with royal navy typography',
+                        tag: 'Light Mode',
+                        swatches: ['#F7F5F0', '#FFFFFF', '#B89555', '#101B30']
+                      },
+                      {
+                        id: 'titanium-jade',
+                        name: 'Titanium + Jade',
+                        desc: 'Deep titanium spruce (#172421) with jade green (#438B78)',
+                        tag: 'Dark Mode',
+                        swatches: ['#172421', '#21332F', '#438B78', '#8BD1B8']
+                      },
+                      {
+                        id: 'titanium-light',
+                        name: 'Titanium Mint (Light)',
+                        desc: 'Clean spruce light (#F3F5F4) with deep jade accents',
+                        tag: 'Light Mode',
+                        swatches: ['#F3F5F4', '#FFFFFF', '#438B78', '#172421']
+                      }
                     ].map(t => (
                       <button
                         type="button"
                         key={t.id}
-                        className={`theme-choice ${theme === t.id ? 'selected' : ''}`}
+                        className={`theme-card-luxury ${theme === t.id ? 'selected' : ''}`}
                         onClick={() => setTheme(t.id)}
                         aria-pressed={theme === t.id}
                       >
-                        <span className={`theme-preview ${t.id}`}><i /><i /><i /></span>
-                        <span className="theme-choice-copy"><b>{t.name}</b><small>{t.desc}</small></span>
-                        <span className="theme-radio">{theme === t.id && <CheckCircle2 size={17} />}</span>
+                        <div className="theme-swatch-bar">
+                          {t.swatches.map((c, i) => (
+                            <span key={i} style={{ background: c }} />
+                          ))}
+                        </div>
+                        <div className="theme-card-info">
+                          <b>{t.name}</b>
+                          <small>{t.desc}</small>
+                        </div>
+                        <span className="theme-tag-pill">{t.tag}</span>
                       </button>
                     ))}
                   </div>
                   <p className="theme-saved-note"><CheckCircle2 size={14} /> Your theme is saved automatically on this device.</p>
 
                   {/* System & Hardware Diagnostics */}
-                  <div style={{ marginTop: '28px', borderTop: '1px solid #233149', paddingTop: '20px' }}>
-                    <h3 style={{ fontSize: '13px', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ marginTop: '28px', borderTop: '1px solid var(--card-border)', paddingTop: '20px' }}>
+                    <h3 style={{ fontSize: '13px', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)' }}>
                       <Cpu size={16} /> System Diagnostics
                     </h3>
-                    <div style={{ fontSize: '10px', color: '#c5d0e4', lineHeight: '1.8' }}>
+                    <div style={{ fontSize: '10px', color: 'var(--text-muted)', lineHeight: '1.8' }}>
                       <div>• <b>Database:</b> {systemSettings?.database_size_mb || 55.4} MB SQLite (WAL Mode active)</div>
                       <div>• <b>Search Engine:</b> {systemSettings?.embedding_model || 'sentence-transformers/all-MiniLM-L6-v2'}</div>
                       <div>• <b>Vector Space:</b> {systemSettings?.vector_dimensions || 384} dimensions + SQLite FTS5</div>
@@ -1396,7 +1610,7 @@ function App() {
                     <div>
                       <label>PREFERRED LOCAL MODEL</label>
                       <select
-                        style={{ width: '100%', padding: '10px', background: '#111a2d', color: '#dce4f4', border: '1px solid #303d58', borderRadius: '7px' }}
+                        style={{ width: '100%', padding: '10px', background: 'var(--select-bg)', color: 'var(--text-main)', border: '1px solid var(--card-border)', borderRadius: '7px' }}
                         value={profile.preferred_model || 'qwen2.5:7b'}
                         onChange={e => setProfile(p => ({ ...p, preferred_model: e.target.value }))}
                       >
@@ -1409,7 +1623,7 @@ function App() {
                     </div>
 
                     {profileSavedMsg && (
-                      <div style={{ fontSize: '10px', color: '#85e2b8', padding: '6px 10px', background: '#133327', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '10px', color: '#10b981', padding: '6px 10px', background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.35)', borderRadius: '6px' }}>
                         {profileSavedMsg}
                       </div>
                     )}
@@ -1424,8 +1638,8 @@ function App() {
           )}
         </div>
 
-        <footer>
-          © 2026 PrepPilot <span>Built to help you study smarter.</span>
+        <footer className="app-footer">
+          <span>© 2026 PrepPilot · <span style={{ opacity: 0.8 }}>Built to help you study smarter.</span></span>
           <span className="footer-demo">FASTAPI HYBRID SEARCH &amp; REACT INTEGRATED</span>
         </footer>
       </main>

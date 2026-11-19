@@ -10,7 +10,7 @@ What it contains
   2. Database         your existing preppilot.db + the new feature tables
   3. Hybrid search    vector search (MiniLM) + keyword search (SQLite FTS5) merged with RRF
   4. Question generator  chunk -> LLM questions -> verified against the same chunk -> question_bank
-  5. Endpoints        /health  /search  /ask  /books/{id}/chapters  /generate/questions  /questions
+  5. Endpoints        /health  /search  /ask  /books/{id}/chapters  /generate/questions  /questions  /adaptive/*
 
 It only uses scripts/db.py (get_connection, search_chunks) from your project.
 It does NOT need app/, retriever.py or answer_generator.py.
@@ -18,11 +18,13 @@ It does NOT need app/, retriever.py or answer_generator.py.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
 import sys
 import time
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,7 +32,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 import urllib.error
 import urllib.request
@@ -279,6 +281,32 @@ CREATE TABLE IF NOT EXISTS mock_exam_items (
   exam_id INT, question_id INT, position INT, answer_given TEXT, marks_awarded REAL);
 """
 
+ADAPTIVE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS adaptive_mastery (
+  student_id TEXT, book_id TEXT, chapter TEXT, theta REAL DEFAULT 0.5,
+  attempts INT DEFAULT 0, correct INT DEFAULT 0, updated_at TEXT,
+  PRIMARY KEY (student_id, book_id, chapter));
+CREATE TABLE IF NOT EXISTS adaptive_sessions (
+  id INTEGER PRIMARY KEY, student_id TEXT, book_id TEXT, chapter TEXT,
+  max_questions INT, theta REAL, started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  finished_at TEXT, current_question_id INT);
+CREATE TABLE IF NOT EXISTS adaptive_answers (
+  session_id INT, question_id INT, position INT, answer_given TEXT, correct INT,
+  theta_before REAL, theta_after REAL, time_ms INT, mastery_before REAL,
+  PRIMARY KEY (session_id, question_id));
+"""
+
+SYLLABUS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS syllabus_exam_map (
+  id INTEGER PRIMARY KEY,
+  book_id TEXT NOT NULL,
+  chapter TEXT NOT NULL,
+  exam_slot TEXT NOT NULL CHECK(exam_slot IN ('T1','T2','T3')),
+  position INT DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(book_id, chapter));
+"""
+
 # The sqlite-vec connection cannot be shared between threads, so ALL database work
 # (search, feature tables, later features) runs on this one dedicated worker thread.
 _pool = ThreadPoolExecutor(max_workers=1)
@@ -323,6 +351,17 @@ def _init() -> None:
         raise FileNotFoundError(f"{DB_PATH} not found. Run `python main.py` first.")
     conn = get_connection(DB_PATH)
     conn.executescript(FEATURE_SCHEMA)
+    conn.executescript(ADAPTIVE_SCHEMA)
+    conn.executescript(SYLLABUS_SCHEMA)
+    try:                                   # older DBs created before mastery_before existed
+        conn.execute("ALTER TABLE adaptive_answers ADD COLUMN mastery_before REAL")
+    except Exception:  # noqa: BLE001
+        pass
+    for col_def in ("book_id TEXT", "exam_type TEXT", "total_questions INT", "time_spent_sec INT"):
+        try:
+            conn.execute(f"ALTER TABLE mock_exams ADD COLUMN {col_def}")
+        except Exception:
+            pass
     _state["fts"] = _ensure_fts(conn)
     _state["conn"] = conn
     try:
@@ -597,6 +636,17 @@ _EXERCISE_RE = re.compile(r"\b\d{1,2}\.\d{1,2}-\d{1,2}\b|\bProblems?\s+\d{1,2}-\
 # wording that refers to something the student cannot see
 _POINTS_AT_TEXT_RE = re.compile(r"\b(?:described|illustrated|depicted|discussed above|shown in|in the figure|above|below)\b", re.I)
 
+_TRIVIA_RE = re.compile(
+    r"\bwho(?:m)?\b.{0,40}\b(?:invent\w*|credit\w*|propos\w*|devis\w*|introduc\w*|creat\w*|discover\w*|develop\w*|named?|wrote|designed)\b"
+    r"|\bin\s+which\s+year\b|\bwhen\s+(?:was|were)\b.{0,40}\b(?:invent\w*|introduc\w*|publish\w*|propos\w*)\b", re.I)
+# chained ranges "1 <= i <= n" and ellipsis ranges "i ... n": extraction often drops the "+1" etc. from these
+_INDEX_RANGE_RE = re.compile(r"[\w+\-]+\s*[≤<]=?\s*\w+\s*[≤<]=?\s*\w+|\b\w+\s*(?:\.{2,3}|…)\s*\w+\b")
+
+
+def _bad_text(*texts: str) -> bool:
+    joined = " ".join(str(t) for t in texts)
+    return bool(_TRIVIA_RE.search(joined) or _INDEX_RANGE_RE.search(joined))
+
 
 def _is_exercise_chunk(text: str) -> bool:
     return bool(_EXERCISE_RE.search(text))
@@ -630,6 +680,8 @@ def _clean_question(q: Any, qtype: str, level: float) -> Optional[Dict[str, Any]
         return None
     if _POINTS_AT_TEXT_RE.search(question):
         return None
+    if _bad_text(question, answer if qtype != "mcq" else "", str(q.get("explanation", ""))):
+        return None
     out: Dict[str, Any] = {"qtype": qtype, "question": question, "explanation": _tidy(str(q.get("explanation", "")).strip(), explanation=True),
                            "difficulty": level, "marks": DEFAULT_MARKS[qtype]}
     if qtype == "mcq":
@@ -639,6 +691,8 @@ def _clean_question(q: Any, qtype: str, level: float) -> Optional[Dict[str, Any]
         if any(re.search(r"\b(?:excerpt|passage)\b", str(o), re.I) for o in opts):
             return None
         if any(_looks_broken(str(o)) for o in opts):
+            return None
+        if _bad_text(*[str(o) for o in opts]):
             return None
         opts = [re.sub(r"^\s*[A-Da-d][\).:]\s+", "", str(o)).strip() for o in opts]
         if any(not o for o in opts) or len({o.lower() for o in opts}) != 4:
@@ -759,6 +813,368 @@ def _list_chapters(conn, book_id: str):
         "SELECT chapter, chapter_title, COUNT(*) AS chunks FROM chunks WHERE book_id = ? "
         "GROUP BY chapter, chapter_title ORDER BY MIN(id)", (book_id.upper(),)).fetchall()
     return [dict(r) for r in rows]
+
+
+# =============================================================================
+# 5b. ADAPTIVE QUIZ  (ability estimate per student, next question picked to match it)
+#     Uses question_bank (MCQ only). If the bank has nothing suitable at the needed
+#     difficulty, generate_questions() is called to fill it, then selection is retried.
+# =============================================================================
+THETA_START = 0.5
+TARGET_OFFSET = -0.05       # aim a little below ability so most answers are right but not trivial
+SLOPE = 6.0                 # steepness of the success curve
+
+
+def _p_correct(theta: float, difficulty: float) -> float:
+    """Chance the student answers a question of this difficulty (0-1 scale) correctly."""
+    return 1.0 / (1.0 + math.exp(-SLOPE * (theta - difficulty)))
+
+
+def _update_theta(theta: float, difficulty: float, correct: bool, attempts: int) -> float:
+    """Elo-style update. Big steps for new students, smaller as evidence builds up."""
+    k = max(0.06, 0.30 / math.sqrt(attempts + 1))
+    new = theta + k * ((1.0 if correct else 0.0) - _p_correct(theta, difficulty))
+    return min(0.98, max(0.02, new))
+
+
+def _level_label(theta: float) -> str:
+    return "beginner" if theta < 0.35 else "intermediate" if theta < 0.6 else "advanced"
+
+
+def _public_question(d: Dict[str, Any]) -> Dict[str, Any]:
+    opts = d.get("options_json")
+    return {"id": d["id"], "question": d["question"], "options": json.loads(opts) if opts else None,
+            "difficulty": d["difficulty"], "book_id": d.get("book_id"), "chapter": str(d.get("chapter") or ""),
+            "chapter_title": d.get("chapter_title"), "section": d.get("section"), "page_start": d.get("page_start"),
+            "exam_slot": d.get("exam_slot"), "prerequisites": d.get("prerequisites", [])}
+
+
+def _adaptive_start(conn, student_id: str, book_id: str, chapter: Optional[str], max_q: int) -> Dict[str, Any]:
+    book = book_id.upper()
+    rows = conn.execute("SELECT theta FROM adaptive_mastery WHERE student_id=? AND book_id=?"
+                        + (" AND chapter=?" if chapter else ""),
+                        (student_id, book) + ((str(chapter).strip(),) if chapter else ())).fetchall()
+    theta = sum(r[0] for r in rows) / len(rows) if rows else THETA_START
+    cur = conn.execute("INSERT INTO adaptive_sessions (student_id, book_id, chapter, max_questions, theta) "
+                       "VALUES (?,?,?,?,?)", (student_id, book, str(chapter).strip() if chapter else None, max_q, theta))
+    conn.commit()
+    return {"session_id": cur.lastrowid, "theta": theta}
+
+
+def _adaptive_pick(conn, session_id: int) -> Optional[Dict[str, Any]]:
+    """Choose the next unanswered MCQ whose difficulty is closest to the student's current level."""
+    s = conn.execute("SELECT * FROM adaptive_sessions WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        return None
+    where, params = ["q.verified=1", "q.qtype='mcq'", "c.book_id=?"], [s["book_id"]]
+    if s["chapter"]:
+        ch_s = str(s["chapter"]).strip()
+        if ch_s.startswith("exam:"):
+            slot = ch_s.split(":", 1)[1].upper()
+            if slot == "T1":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T1')")
+                params.append(s["book_id"])
+            elif slot == "T2":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T2')")
+                params.append(s["book_id"])
+            elif slot in ("T1+T2", "T1_PLUS_T2"):
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot IN ('T1','T2'))")
+                params.append(s["book_id"])
+        else:
+            where.append("CAST(c.chapter AS TEXT)=?")
+            params.append(ch_s)
+    rows = conn.execute(
+        "SELECT q.id, q.question, q.options_json, q.difficulty, q.chunk_id, c.book_id, c.chapter, c.chapter_title, "
+        "c.section, c.page_start, e.exam_slot "
+        "FROM question_bank q "
+        "JOIN chunks c ON c.chunk_id=q.chunk_id "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+        "WHERE " + " AND ".join(where),
+        params).fetchall()
+    in_session = {r[0] for r in conn.execute("SELECT question_id FROM adaptive_answers WHERE session_id=?", (session_id,))}
+    ever_seen = {r[0] for r in conn.execute(
+        "SELECT a.question_id FROM adaptive_answers a JOIN adaptive_sessions x ON x.id=a.session_id WHERE x.student_id=?",
+        (s["student_id"],))}
+    target = min(0.95, max(0.1, s["theta"] + TARGET_OFFSET))
+    cand = [dict(r) for r in rows if r["id"] not in in_session]
+    if not cand:
+        return None
+    # unseen-before questions first, then closest difficulty to the target (small random tie-break)
+    cand.sort(key=lambda d: (d["id"] in ever_seen, abs(d["difficulty"] - target) + random.random() * 0.05))
+    best = cand[0]
+    # not close enough (> one level away) and we have never-seen budget to generate -> ask caller to generate
+    best["_gap"] = abs(best["difficulty"] - target)
+    best["_target"] = target
+    best["_seen"] = best["id"] in ever_seen
+
+    # Attach prerequisite metadata
+    b_id = best.get("book_id")
+    c_num = str(best.get("chapter") or "")
+    if b_id and c_num:
+        p_rows = conn.execute(
+            "SELECT p.prereq_chapter, c.chapter_title, e.exam_slot FROM chapter_prereqs p "
+            "LEFT JOIN chunks c ON c.book_id=p.book_id AND c.chapter=p.prereq_chapter "
+            "LEFT JOIN syllabus_exam_map e ON e.book_id=p.book_id AND e.chapter=p.prereq_chapter "
+            "WHERE p.book_id=? AND p.chapter=? "
+            "GROUP BY p.prereq_chapter",
+            (b_id, c_num)).fetchall()
+        best["prerequisites"] = [{"chapter": r[0], "title": r[1] or f"Chapter {r[0]}", "exam_slot": r[2] or "T1"} for r in p_rows]
+    else:
+        best["prerequisites"] = []
+    return best
+
+
+def _adaptive_set_current(conn, session_id: int, qid: Optional[int]) -> None:
+    conn.execute("UPDATE adaptive_sessions SET current_question_id=? WHERE id=?", (qid, session_id))
+    conn.commit()
+
+
+def _adaptive_next(session_id: int) -> Optional[Dict[str, Any]]:
+    """Pick the next question; generate more at the needed level if the bank cannot give a good match."""
+    pick = run_db(_adaptive_pick, session_id)
+    if pick is None or pick["_gap"] > 0.2 or pick["_seen"]:
+        s = run_db(lambda c: dict(c.execute("SELECT * FROM adaptive_sessions WHERE id=?", (session_id,)).fetchone()))
+        target = pick["_target"] if pick else min(0.95, max(0.1, s["theta"] + TARGET_OFFSET))
+        level = "easy" if target < 0.4 else "medium" if target < 0.65 else "hard"
+        try:
+            generate_questions(s["book_id"], s["chapter"], "mcq", 4, level)
+        except RuntimeError as e:           # LLM down: fall back to whatever the bank has
+            print(f"[adaptive] generation failed, using existing bank: {e}")
+        pick = run_db(_adaptive_pick, session_id) or pick
+    if pick is None:
+        return None
+    run_db(_adaptive_set_current, session_id, pick["id"])
+    return _public_question(pick)
+
+
+def _adaptive_record(conn, session_id: int, question_id: int, answer: str, time_ms: Optional[int]) -> Dict[str, Any]:
+    s = conn.execute("SELECT * FROM adaptive_sessions WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        raise KeyError("session not found")
+    if s["finished_at"]:
+        raise ValueError("session already finished")
+    if s["current_question_id"] != question_id:
+        raise ValueError("this is not the question currently asked in this session")
+    q = conn.execute(
+        "SELECT q.id, q.answer, q.explanation, q.difficulty, q.options_json, q.verified, c.book_id, c.chapter FROM question_bank q "
+        "LEFT JOIN chunks c ON c.chunk_id=q.chunk_id WHERE q.id=?", (question_id,)).fetchone()
+    if not q:
+        raise KeyError("question not found")
+    if not q["verified"]:
+        raise ValueError("this question was retired; request a new one from /adaptive/session/{id}/question")
+    given = answer.strip().upper()[:1]
+    correct = given == str(q["answer"]).strip().upper()[:1]
+    chap = str(q["chapter"] or "")
+    m = conn.execute("SELECT theta, attempts, correct FROM adaptive_mastery WHERE student_id=? AND book_id=? AND chapter=?",
+                     (s["student_id"], s["book_id"], chap)).fetchone()
+    m_theta, m_att, m_cor = (m["theta"], m["attempts"], m["correct"]) if m else (THETA_START, 0, 0)
+    n_session = conn.execute("SELECT COUNT(*) FROM adaptive_answers WHERE session_id=?", (session_id,)).fetchone()[0]
+    new_session_theta = _update_theta(s["theta"], q["difficulty"], correct, n_session)
+    new_m_theta = _update_theta(m_theta, q["difficulty"], correct, m_att)
+    conn.execute("INSERT OR REPLACE INTO adaptive_mastery VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                 (s["student_id"], s["book_id"], chap, new_m_theta, m_att + 1, m_cor + int(correct)))
+    conn.execute("INSERT INTO adaptive_answers VALUES (?,?,?,?,?,?,?,?,?)",
+                 (session_id, question_id, n_session + 1, given, int(correct), s["theta"], new_session_theta, time_ms, m_theta))
+    done = n_session + 1 >= s["max_questions"]
+    conn.execute("UPDATE adaptive_sessions SET theta=?, current_question_id=NULL, finished_at=" +
+                 ("CURRENT_TIMESTAMP" if done else "NULL") + " WHERE id=?", (new_session_theta, session_id))
+    conn.commit()
+
+    # Look up prerequisites for feedback
+    prereqs = []
+    prereq_tip = None
+    if chap:
+        p_rows = conn.execute(
+            "SELECT p.prereq_chapter, c.chapter_title, e.exam_slot FROM chapter_prereqs p "
+            "LEFT JOIN chunks c ON c.book_id=p.book_id AND c.chapter=p.prereq_chapter "
+            "LEFT JOIN syllabus_exam_map e ON e.book_id=p.book_id AND e.chapter=p.prereq_chapter "
+            "WHERE p.book_id=? AND p.chapter=? "
+            "GROUP BY p.prereq_chapter",
+            (s["book_id"], chap)).fetchall()
+        prereqs = [{"chapter": r[0], "title": r[1] or f"Chapter {r[0]}", "exam_slot": r[2] or "T1"} for r in p_rows]
+        if not correct and prereqs:
+            p_names = ", ".join(f"Ch. {p['chapter']} ({p['title']})" for p in prereqs)
+            prereq_tip = f"Prerequisite Concept: Revise {p_names} to strengthen your foundation for this topic."
+
+    opts = json.loads(q["options_json"]) if q["options_json"] else []
+    idx = "ABCD".find(str(q["answer"]).strip().upper()[:1])
+    return {"correct": correct, "correct_answer": str(q["answer"]).strip().upper()[:1],
+            "correct_answer_text": opts[idx] if 0 <= idx < len(opts) else None,
+            "explanation": q["explanation"], "answered": n_session + 1, "total": s["max_questions"],
+            "ability": round(new_session_theta, 3), "level": _level_label(new_session_theta), "finished": done,
+            "prerequisites": prereqs, "prerequisite_tip": prereq_tip}
+
+
+def _adaptive_summary(conn, session_id: int) -> Dict[str, Any]:
+    s = conn.execute("SELECT * FROM adaptive_sessions WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        raise KeyError("session not found")
+    rows = conn.execute(
+        "SELECT a.position, a.question_id, a.answer_given, a.correct, a.theta_after, q.difficulty, c.chapter, c.chapter_title "
+        "FROM adaptive_answers a JOIN question_bank q ON q.id=a.question_id LEFT JOIN chunks c ON c.chunk_id=q.chunk_id "
+        "WHERE a.session_id=? ORDER BY a.position", (session_id,)).fetchall()
+    items = [dict(r) for r in rows]
+    by_ch: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        k = str(it["chapter"] or "")
+        d = by_ch.setdefault(k, {"chapter": k, "chapter_title": it["chapter_title"], "asked": 0, "correct": 0})
+        d["asked"] += 1
+        d["correct"] += it["correct"]
+    weak = sorted((d for d in by_ch.values() if d["correct"] / d["asked"] < 0.6), key=lambda d: d["correct"] / d["asked"])
+    return {"session_id": session_id, "finished": bool(s["finished_at"]), "answered": len(items),
+            "correct": sum(i["correct"] for i in items), "ability": round(s["theta"], 3), "level": _level_label(s["theta"]),
+            "ability_trend": [round(i["theta_after"], 3) for i in items], "by_chapter": list(by_ch.values()),
+            "revise_these": weak}
+
+
+def _adaptive_progress(conn, student_id: str, book_id: Optional[str]):
+    rows = conn.execute(
+        "SELECT m.book_id, m.chapter, m.theta, m.attempts, m.correct, (SELECT chapter_title FROM chunks c WHERE c.book_id=m.book_id "
+        "AND CAST(c.chapter AS TEXT)=m.chapter LIMIT 1) AS chapter_title FROM adaptive_mastery m WHERE m.student_id=?"
+        + (" AND m.book_id=?" if book_id else "") + " ORDER BY m.theta ASC",
+        (student_id,) + ((book_id.upper(),) if book_id else ())).fetchall()
+    return [{**dict(r), "theta": round(r["theta"], 3), "level": _level_label(r["theta"])} for r in rows]
+
+
+def _replay_chapter(conn, student_id: str, book_id: str, chap: str) -> None:
+    """Rebuild one student's chapter level from the answers that still exist (oldest first)."""
+    rows = conn.execute(
+        "SELECT a.rowid AS rid, a.correct, q.difficulty, c.chapter FROM adaptive_answers a "
+        "JOIN adaptive_sessions x ON x.id=a.session_id JOIN question_bank q ON q.id=a.question_id "
+        "LEFT JOIN chunks c ON c.chunk_id=q.chunk_id WHERE x.student_id=? AND x.book_id=? ORDER BY a.rowid",
+        (student_id, book_id)).fetchall()
+    theta, att, cor = THETA_START, 0, 0
+    for r in rows:
+        if str(r["chapter"] or "") != chap:
+            continue
+        conn.execute("UPDATE adaptive_answers SET mastery_before=? WHERE rowid=?", (theta, r["rid"]))
+        theta = _update_theta(theta, r["difficulty"], bool(r["correct"]), att)
+        att += 1
+        cor += int(r["correct"])
+    if att == 0:
+        conn.execute("DELETE FROM adaptive_mastery WHERE student_id=? AND book_id=? AND chapter=?",
+                     (student_id, book_id, chap))
+    else:
+        conn.execute("INSERT OR REPLACE INTO adaptive_mastery VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                     (student_id, book_id, chap, theta, att, cor))
+
+
+def _replay_session(conn, session_id: int, start_theta: float) -> None:
+    """Rebuild a session's ability trail from the answers that still exist."""
+    rows = conn.execute(
+        "SELECT a.rowid AS rid, a.correct, q.difficulty FROM adaptive_answers a "
+        "JOIN question_bank q ON q.id=a.question_id WHERE a.session_id=? ORDER BY a.position", (session_id,)).fetchall()
+    theta = start_theta
+    for i, r in enumerate(rows):
+        new = _update_theta(theta, r["difficulty"], bool(r["correct"]), i)
+        conn.execute("UPDATE adaptive_answers SET position=?, theta_before=?, theta_after=? WHERE rowid=?",
+                     (i + 1, theta, new, r["rid"]))
+        theta = new
+    conn.execute("UPDATE adaptive_sessions SET theta=? WHERE id=?", (theta, session_id))
+
+
+def _flag_question(conn, question_id: int) -> Dict[str, Any]:
+    """Retire a bad question and undo its effect on every student's session and chapter levels.
+
+    Levels are recomputed by replaying the answers that remain, so answers given after the bad one
+    keep their effect (the old version reset the level to its value before the bad answer).
+    """
+    if not conn.execute("SELECT 1 FROM question_bank WHERE id=?", (question_id,)).fetchone():
+        raise KeyError("question not found")
+    conn.execute("UPDATE question_bank SET verified=0 WHERE id=?", (question_id,))
+    rows = conn.execute(
+        "SELECT a.session_id, x.student_id, x.book_id, c.chapter FROM adaptive_answers a "
+        "JOIN adaptive_sessions x ON x.id=a.session_id JOIN question_bank q ON q.id=a.question_id "
+        "LEFT JOIN chunks c ON c.chunk_id=q.chunk_id WHERE a.question_id=?", (question_id,)).fetchall()
+    # a session's starting ability is the theta_before of its first answer; read it before deleting anything
+    starts = {}
+    for r in rows:
+        first = conn.execute("SELECT theta_before FROM adaptive_answers WHERE session_id=? ORDER BY position LIMIT 1",
+                             (r["session_id"],)).fetchone()
+        starts[r["session_id"]] = first[0]
+    conn.execute("DELETE FROM adaptive_answers WHERE question_id=?", (question_id,))
+    # anyone currently being shown this question must be given a new one
+    conn.execute("UPDATE adaptive_sessions SET current_question_id=NULL WHERE current_question_id=? AND finished_at IS NULL",
+                 (question_id,))
+    for sid, start_theta in starts.items():
+        _replay_session(conn, sid, start_theta)
+    for key in {(r["student_id"], r["book_id"], str(r["chapter"] or "")) for r in rows}:
+        _replay_chapter(conn, *key)
+    conn.commit()
+    return {"flagged": question_id, "answers_reverted": len(rows), "sessions_recomputed": len(starts)}
+
+
+def _adaptive_current(conn, session_id: int) -> Optional[Dict[str, Any]]:
+    """The question a session is currently waiting on (None if it has none)."""
+    s = conn.execute("SELECT * FROM adaptive_sessions WHERE id=?", (session_id,)).fetchone()
+    if not s:
+        raise KeyError("session not found")
+    if s["finished_at"]:
+        raise ValueError("session already finished")
+    answered = conn.execute("SELECT COUNT(*) FROM adaptive_answers WHERE session_id=?", (session_id,)).fetchone()[0]
+    d = None
+    if s["current_question_id"]:
+        r = conn.execute(
+            "SELECT q.id, q.question, q.options_json, q.difficulty, c.book_id, c.chapter, c.chapter_title, c.section, c.page_start "
+            "FROM question_bank q LEFT JOIN chunks c ON c.chunk_id=q.chunk_id WHERE q.id=? AND q.verified=1",
+            (s["current_question_id"],)).fetchone()
+        d = dict(r) if r else None
+    return {"question": d, "answered": answered, "total": s["max_questions"],
+            "ability": round(s["theta"], 3), "level": _level_label(s["theta"])}
+
+
+def _level_of(d: float) -> str:
+    return "easy" if d < 0.4 else "medium" if d < 0.65 else "hard"
+
+
+def _bank_counts(conn, book_id: str, chapter: Optional[str]) -> Dict[str, int]:
+    where, params = ["q.verified=1", "q.qtype='mcq'", "c.book_id=?"], [book_id.upper()]
+    if chapter:
+        ch_s = str(chapter).strip()
+        if ch_s.startswith("exam:"):
+            slot = ch_s.split(":", 1)[1].upper()
+            if slot == "T1":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T1')")
+                params.append(book_id.upper())
+            elif slot == "T2":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T2')")
+                params.append(book_id.upper())
+            elif slot in ("T1+T2", "T1_PLUS_T2"):
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot IN ('T1','T2'))")
+                params.append(book_id.upper())
+        else:
+            where.append("CAST(c.chapter AS TEXT)=?")
+            params.append(ch_s)
+    rows = conn.execute("SELECT q.difficulty FROM question_bank q JOIN chunks c ON c.chunk_id=q.chunk_id WHERE "
+                        + " AND ".join(where), params).fetchall()
+    out = {"easy": 0, "medium": 0, "hard": 0}
+    for r in rows:
+        out[_level_of(r[0])] += 1
+    return out
+
+
+_prefill_status: Dict[str, Dict[str, Any]] = {}
+
+
+def _prefill(book_id: str, chapter: Optional[str], per_level: int) -> None:
+    key = f"{book_id.upper()}:{chapter or '*'}"
+    st = _prefill_status[key] = {"state": "running", "generated": 0, "errors": []}
+    try:
+        for level in ("easy", "medium", "hard"):
+            fails = 0
+            while fails < 2:
+                need = per_level - run_db(_bank_counts, book_id, chapter)[level]
+                if need <= 0:
+                    break
+                res = generate_questions(book_id, chapter, "mcq", min(need, 8), level)
+                st["generated"] += res.get("saved", 0)
+                if res.get("saved", 0) == 0:
+                    fails += 1
+                    st["errors"] += res.get("errors", [])[:1]
+        st["state"] = "done"
+    except Exception as e:  # noqa: BLE001
+        st["state"] = "failed"
+        st["errors"].append(str(e)[:200])
 
 # =============================================================================
 # FLASHCARDS
@@ -1067,7 +1483,28 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PrepPilot API", version="0.3.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def add_cors_pna_header(request: Request, call_next):
+    if request.method == "OPTIONS":
+        response = Response(status_code=204)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 
 class AskIn(BaseModel):
@@ -1137,6 +1574,134 @@ def questions(book_id: Optional[str] = None, chapter: Optional[str] = None, qtyp
               limit: int = 20, include_answers: bool = True):
     """Verified questions from the question bank."""
     return run_db(_list_questions, book_id, chapter, qtype, min(max(limit, 1), 200), include_answers)
+
+
+# =============================================================================
+# ADAPTIVE QUIZ API ENDPOINTS
+# =============================================================================
+
+class AdaptiveStartIn(BaseModel):
+    model_config = {"json_schema_extra": {"examples": [
+        {"student_id": "simar", "book_id": "CLRS", "chapter": "6", "max_questions": 10}]}}
+    student_id: str = Field(min_length=1)
+    book_id: str = Field(description="DS | C | CPP | CLRS")
+    chapter: Optional[str] = Field(None, description="empty = whole book")
+    max_questions: int = Field(10, ge=3, le=30)
+
+
+class AdaptiveAnswerIn(BaseModel):
+    session_id: int
+    question_id: int
+    answer: str = Field(min_length=1, max_length=1, description="A | B | C | D")
+    time_ms: Optional[int] = None
+
+
+@app.post("/adaptive/start")
+def adaptive_start(body: AdaptiveStartIn):
+    """Starts an adaptive quiz and returns the first question (without the answer)."""
+    s = run_db(_adaptive_start, body.student_id, body.book_id, body.chapter, body.max_questions)
+    try:
+        q = _adaptive_next(s["session_id"])
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if q is None:
+        raise HTTPException(status_code=404, detail="No questions available for that book/chapter yet.")
+    return {"session_id": s["session_id"], "ability": round(s["theta"], 3), "level": _level_label(s["theta"]),
+            "number": 1, "total": body.max_questions, "question": q}
+
+
+@app.post("/adaptive/answer")
+def adaptive_answer(body: AdaptiveAnswerIn):
+    """Grades the answer, updates the student's level, and returns the next question (or the final summary)."""
+    try:
+        res = run_db(_adaptive_record, body.session_id, body.question_id, body.answer, body.time_ms)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if res["finished"]:
+        res["summary"] = run_db(_adaptive_summary, body.session_id)
+        return res
+    try:
+        nxt = _adaptive_next(body.session_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if nxt is None:                      # bank exhausted -> end early
+        run_db(lambda c: (c.execute("UPDATE adaptive_sessions SET finished_at=CURRENT_TIMESTAMP WHERE id=?",
+                                    (body.session_id,)), c.commit()))
+        res["finished"] = True
+        res["summary"] = run_db(_adaptive_summary, body.session_id)
+        return res
+    res["number"] = res["answered"] + 1
+    res["next_question"] = nxt
+    return res
+
+
+@app.get("/adaptive/session/{session_id}")
+def adaptive_session(session_id: int):
+    try:
+        return run_db(_adaptive_summary, session_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/adaptive/session/{session_id}/question")
+def adaptive_session_question(session_id: int):
+    """The question the session is waiting on; picks a new one if the previous one was flagged and retired."""
+    try:
+        cur = run_db(_adaptive_current, session_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    q = cur["question"]
+    if q is not None:
+        q = _public_question(q)
+    else:
+        try:
+            q = _adaptive_next(session_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        if q is None:
+            raise HTTPException(status_code=404, detail="No questions left for this session.")
+    return {"session_id": session_id, "number": cur["answered"] + 1, "total": cur["total"],
+            "ability": cur["ability"], "level": cur["level"], "question": q}
+
+
+@app.get("/adaptive/progress/{student_id}")
+def adaptive_progress(student_id: str, book_id: Optional[str] = None):
+    """Per-chapter level for a student, weakest first (use it for a 'what to study next' screen)."""
+    return run_db(_adaptive_progress, student_id, book_id)
+
+
+@app.post("/questions/{question_id}/flag")
+def flag_question(question_id: int):
+    """Report a wrong or silly question: it is never served again and students' levels are rolled back."""
+    try:
+        return run_db(_flag_question, question_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class PrefillIn(BaseModel):
+    model_config = {"json_schema_extra": {"examples": [{"book_id": "CLRS", "chapter": "6", "per_level": 8}]}}
+    book_id: str
+    chapter: Optional[str] = None
+    per_level: int = Field(8, ge=1, le=40, description="target verified MCQs per difficulty level")
+
+
+@app.post("/adaptive/prefill")
+def adaptive_prefill(body: PrefillIn, background: BackgroundTasks):
+    """Fills the question bank in the background so students never wait for the LLM."""
+    background.add_task(_prefill, body.book_id, body.chapter, body.per_level)
+    return {"started": True, "check": f"/adaptive/bank?book_id={body.book_id}" + (f"&chapter={body.chapter}" if body.chapter else "")}
+
+
+@app.get("/adaptive/bank")
+def adaptive_bank(book_id: str, chapter: Optional[str] = None):
+    """How many verified MCQs exist per difficulty level, plus the state of any prefill job."""
+    return {"counts": run_db(_bank_counts, book_id, chapter),
+            "prefill": _prefill_status.get(f"{book_id.upper()}:{chapter or '*'}")}
 
 # =============================================================================
 # FLASHCARD API ENDPOINTS
@@ -1281,12 +1846,19 @@ def _get_subjects_summary(conn, student_id: str = "default"):
         chapter_count = conn.execute("SELECT COUNT(DISTINCT chapter) FROM chunks WHERE book_id = ?", (code,)).fetchone()[0]
         image_count = conn.execute("SELECT COUNT(*) FROM extracted_images WHERE book_id = ?", (code,)).fetchone()[0]
 
-        # Calculate student mastery if available
-        mastery_row = conn.execute(
-            "SELECT AVG(mastery_score) FROM topic_mastery WHERE topic_id LIKE ? OR topic_name LIKE ?",
-            (f"{code.lower()}%", f"%{meta['name']}%")
+        # Calculate student mastery from adaptive_mastery or topic_mastery
+        ad_row = conn.execute(
+            "SELECT AVG(theta), COUNT(*) FROM adaptive_mastery WHERE book_id = ?",
+            (code,)
         ).fetchone()
-        avg_mastery = round(mastery_row[0] * 100, 1) if (mastery_row and mastery_row[0] is not None) else 70.0
+        if ad_row and ad_row[1] > 0 and ad_row[0] is not None:
+            avg_mastery = round(ad_row[0] * 100, 1)
+        else:
+            mastery_row = conn.execute(
+                "SELECT AVG(mastery_score) FROM topic_mastery WHERE topic_id LIKE ? OR topic_name LIKE ?",
+                (f"{code.lower()}%", f"%{meta['name']}%")
+            ).fetchone()
+            avg_mastery = round(mastery_row[0] * 100, 1) if (mastery_row and mastery_row[0] is not None) else 0.0
 
         out.append({
             **meta,
@@ -1316,53 +1888,175 @@ def _get_subject_details(conn, subject_id: str, student_id: str = "default"):
 
 
 def _get_overview_stats(conn, student_id: str = "default"):
+    # 1. Real textbook & chapter numbers
     n_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    total_quizzes = conn.execute("SELECT COUNT(*) FROM quiz_attempts").fetchone()[0]
-    correct_quizzes = conn.execute("SELECT COUNT(*) FROM quiz_attempts WHERE is_correct = 1").fetchone()[0]
-    quiz_accuracy = round((correct_quizzes / total_quizzes * 100), 1) if total_quizzes > 0 else 74.0
+    n_books = conn.execute("SELECT COUNT(DISTINCT book_id) FROM chunks").fetchone()[0]
+    total_chapters = conn.execute("SELECT COUNT(DISTINCT book_id || ':' || chapter) FROM chunks WHERE chapter IS NOT NULL AND chapter != ''").fetchone()[0]
 
+    # 2. Real quiz attempts across Adaptive Quiz, Mock Exams, and Legacy Quiz
+    ad_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(correct),0), COALESCE(SUM(time_ms),0) FROM adaptive_answers").fetchone()
+    mock_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN marks_awarded > 0 THEN 1 ELSE 0 END),0) FROM mock_exam_items WHERE answer_given IS NOT NULL").fetchone()
+    leg_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END),0) FROM quiz_attempts").fetchone()
+
+    total_questions = (ad_row[0] or 0) + (mock_row[0] or 0) + (leg_row[0] or 0)
+    total_correct = (ad_row[1] or 0) + (mock_row[1] or 0) + (leg_row[1] or 0)
+    quiz_accuracy = round((total_correct / max(1, total_questions)) * 100, 1) if total_questions > 0 else 0.0
+
+    mock_exams_cnt = conn.execute("SELECT COUNT(*) FROM mock_exams WHERE submitted_at IS NOT NULL").fetchone()[0]
+    ad_sessions_cnt = conn.execute("SELECT COUNT(*) FROM adaptive_sessions").fetchone()[0]
+    total_quizzes = ad_sessions_cnt + mock_exams_cnt
+
+    # 3. Real Flashcards
     total_flashcards = conn.execute("SELECT COUNT(*) FROM flashcards").fetchone()[0]
     due_flashcards = conn.execute("SELECT COUNT(*) FROM student_cards WHERE due_date <= datetime('now')").fetchone()[0]
 
-    mastery_rows = conn.execute(
-        "SELECT topic_name, mastery_score FROM topic_mastery ORDER BY mastery_score ASC"
-    ).fetchall()
-    topics_mastered = sum(1 for r in mastery_rows if (r["mastery_score"] or 0) >= 0.70)
+    # 4. Real Topics Mastered & Progress
+    ad_mastered_rows = conn.execute("SELECT DISTINCT book_id || ':' || chapter FROM adaptive_mastery WHERE theta >= 0.55").fetchall()
+    topics_mastered = len(ad_mastered_rows)
+    overall_progress = round((topics_mastered / max(1, total_chapters)) * 100, 1)
+
+    # 5. Real Study Time (in hours)
+    mock_time_sec = conn.execute("SELECT COALESCE(SUM(time_spent_sec),0) FROM mock_exams").fetchone()[0]
+    ad_time_sec = (ad_row[2] or 0) / 1000.0
+    total_sec = ad_time_sec + mock_time_sec
+    study_time_hours = round(total_sec / 3600.0, 1)
+    if study_time_hours == 0.0 and total_questions > 0:
+        study_time_hours = round(max(0.1, total_sec / 60.0 / 60.0), 1)
+
+    # 6. Real Study Streak Calculation
+    date_rows = conn.execute("""
+        SELECT DISTINCT substr(started_at, 1, 10) as d FROM mock_exams WHERE started_at IS NOT NULL
+        UNION
+        SELECT DISTINCT substr(started_at, 1, 10) as d FROM adaptive_sessions WHERE started_at IS NOT NULL
+        ORDER BY d DESC
+    """).fetchall()
+
+    active_dates = set(r[0] for r in date_rows if r[0])
+    today = datetime.now().date()
+    streak = 0
+    check_day = today
+    if today.isoformat() not in active_dates:
+        check_day = today - timedelta(days=1)
+
+    while check_day.isoformat() in active_dates:
+        streak += 1
+        check_day -= timedelta(days=1)
+
+    # 7. Real Focus Areas (Lowest theta first from student's practice, filled with pending foundational chapters)
+    focus_rows = conn.execute("""
+        SELECT m.book_id, m.chapter, m.theta, m.attempts, m.correct, c.chapter_title
+        FROM adaptive_mastery m
+        LEFT JOIN chunks c ON c.book_id=m.book_id AND c.chapter=m.chapter
+        GROUP BY m.book_id, m.chapter
+        ORDER BY m.theta ASC, m.attempts DESC
+    """).fetchall()
 
     focus_areas = []
-    for r in mastery_rows[:4]:
-        score = round((r["mastery_score"] or 0.5) * 100, 1)
+    seen_chapters = set()
+    for r in focus_rows:
+        seen_chapters.add((r['book_id'], str(r['chapter'])))
+        score = round((r["theta"] or 0.5) * 100, 1)
+        name = r["chapter_title"] or f"Chapter {r['chapter']}"
+        color = "rose" if score < 40 else ("amber" if score < 60 else "emerald")
         focus_areas.append({
-            "name": r["topic_name"] or "Topic",
+            "name": f"{r['book_id']}: {name}",
+            "chapter": str(r["chapter"]),
+            "book_id": r["book_id"],
             "score": score,
-            "color": "violet" if score < 50 else ("blue" if score < 70 else "cyan")
+            "attempts": r["attempts"],
+            "correct": r["correct"],
+            "color": color,
+            "status": "Weak Foundation" if score < 40 else ("Needs Practice" if score < 60 else "Proficient")
         })
 
-    if not focus_areas:
-        focus_areas = [
-            {"name": "Dynamic Programming", "score": 43, "color": "violet"},
-            {"name": "Graph Algorithms", "score": 52, "color": "blue"},
-            {"name": "Red-Black Trees", "score": 68, "color": "cyan"},
-        ]
+    # If fewer than 4 focus areas practiced yet, include key prerequisite chapters that need mastery
+    if len(focus_areas) < 4:
+        prereq_needed = conn.execute("""
+            SELECT p.book_id, p.prereq_chapter, c.chapter_title
+            FROM chapter_prereqs p
+            LEFT JOIN chunks c ON c.book_id=p.book_id AND c.chapter=p.prereq_chapter
+            GROUP BY p.book_id, p.prereq_chapter
+            ORDER BY CAST(p.prereq_chapter AS INTEGER) ASC
+        """).fetchall()
+        for p in prereq_needed:
+            if (p["book_id"], str(p["prereq_chapter"])) not in seen_chapters:
+                seen_chapters.add((p["book_id"], str(p["prereq_chapter"])))
+                title = p["chapter_title"] or f"Chapter {p['prereq_chapter']}"
+                focus_areas.append({
+                    "name": f"{p['book_id']}: {title}",
+                    "chapter": str(p["prereq_chapter"]),
+                    "book_id": p["book_id"],
+                    "score": 0.0,
+                    "attempts": 0,
+                    "correct": 0,
+                    "color": "amber",
+                    "status": "Foundational Prerequisite"
+                })
+                if len(focus_areas) >= 4:
+                    break
 
-    activity = [
-        {"day": "Mon", "score": 45}, {"day": "Tue", "score": 62}, {"day": "Wed", "score": 55},
-        {"day": "Thu", "score": 78}, {"day": "Fri", "score": 68}, {"day": "Sat", "score": 88}, {"day": "Sun", "score": 82}
-    ]
+    # 8. Real 7-day Activity Breakdown (Monday - Sunday)
+    day_abbrs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    daily_counts = {d: 0 for d in day_abbrs}
+
+    act_rows = conn.execute("""
+        SELECT substr(started_at, 1, 10) as dt, count(*) as cnt
+        FROM adaptive_sessions
+        GROUP BY dt
+        UNION ALL
+        SELECT substr(started_at, 1, 10) as dt, count(*) as cnt
+        FROM mock_exams
+        GROUP BY dt
+    """).fetchall()
+
+    for r in act_rows:
+        if r["dt"]:
+            try:
+                dt_obj = datetime.strptime(r["dt"][:10], "%Y-%m-%d")
+                d_name = day_abbrs[dt_obj.weekday()]
+                daily_counts[d_name] += r["cnt"]
+            except Exception:
+                pass
+
+    activity = [{"day": d, "score": daily_counts[d]} for d in day_abbrs]
+
+    # 9. Real Subject Breakdown
+    sub_counts = conn.execute("""
+        SELECT book_id, COUNT(*) as chunks, COUNT(DISTINCT chapter) as chapters
+        FROM chunks
+        GROUP BY book_id
+    """).fetchall()
+    subjects_stats = []
+    for sc in sub_counts:
+        bid = sc["book_id"]
+        m_cnt = conn.execute("SELECT COUNT(*) FROM adaptive_mastery WHERE book_id=? AND theta >= 0.55", (bid,)).fetchone()[0]
+        subjects_stats.append({
+            "book_id": bid,
+            "title": BOOK_TITLES.get(bid, bid),
+            "chunks": sc["chunks"],
+            "chapters": sc["chapters"],
+            "mastered_chapters": m_cnt,
+            "progress_pct": round((m_cnt / max(1, sc["chapters"])) * 100, 1)
+        })
 
     return {
         "chunks_indexed": n_chunks,
-        "total_quizzes": max(total_quizzes, 18),
+        "books_count": n_books,
+        "total_chapters": total_chapters,
+        "total_quizzes": total_quizzes,
+        "total_questions_answered": total_questions,
+        "total_correct": total_correct,
         "quiz_accuracy": quiz_accuracy,
-        "topics_mastered": max(topics_mastered, 29),
-        "total_topics": 45,
-        "overall_progress": int(quiz_accuracy),
+        "topics_mastered": topics_mastered,
+        "total_topics": total_chapters,
+        "overall_progress": overall_progress,
         "flashcards_total": total_flashcards,
         "flashcards_due": due_flashcards,
-        "study_streak_days": 4,
-        "study_time_hours": 12.5,
-        "focus_areas": focus_areas,
+        "study_streak_days": streak,
+        "study_time_hours": study_time_hours,
+        "focus_areas": focus_areas[:4],
         "activity": activity,
+        "subjects_stats": subjects_stats,
     }
 
 
@@ -1412,30 +2106,59 @@ def _record_quiz_attempt(conn, item: QuizAttemptIn):
 
 
 def _get_progress_mastery(conn, student_id: str = "default"):
-    rows = conn.execute(
-        "SELECT topic_id, topic_name, mastery_score, attempts_count, last_evaluated FROM topic_mastery ORDER BY mastery_score DESC"
-    ).fetchall()
+    # Load real mastery from adaptive_mastery joined with chunks
+    rows = conn.execute("""
+        SELECT m.book_id, m.chapter, m.theta, m.attempts, m.correct, m.updated_at, c.chapter_title
+        FROM adaptive_mastery m
+        LEFT JOIN chunks c ON c.book_id=m.book_id AND c.chapter=m.chapter
+        GROUP BY m.book_id, m.chapter
+        ORDER BY m.theta DESC
+    """).fetchall()
+
     out = []
+    seen = set()
     for r in rows:
+        ch_title = r["chapter_title"] or f"Chapter {r['chapter']}"
+        topic_name = f"{r['book_id']}: {ch_title}"
+        seen.add(topic_name)
         out.append({
-            "topic": r["topic_name"] or r["topic_id"],
-            "topic_id": r["topic_id"],
-            "score": int(round((r["mastery_score"] or 0.5) * 100)),
-            "attempts": r["attempts_count"] or 1,
-            "last_evaluated": str(r["last_evaluated"])
+            "topic": topic_name,
+            "topic_id": f"{r['book_id']}_{r['chapter']}",
+            "book_id": r["book_id"],
+            "chapter": str(r["chapter"]),
+            "score": int(round((r["theta"] or 0.5) * 100)),
+            "attempts": r["attempts"] or 0,
+            "correct": r["correct"] or 0,
+            "last_evaluated": str(r["updated_at"] or "")
         })
 
-    defaults = [
-        {"topic": "Sorting & Heaps", "topic_id": "sorting", "score": 91, "attempts": 8},
-        {"topic": "Arrays & Strings", "topic_id": "arrays", "score": 86, "attempts": 12},
-        {"topic": "Binary Search Trees", "topic_id": "bst", "score": 75, "attempts": 6},
-        {"topic": "AVL & Red-Black Trees", "topic_id": "trees", "score": 68, "attempts": 5},
-        {"topic": "Graph Algorithms", "topic_id": "graphs", "score": 52, "attempts": 4},
-        {"topic": "Dynamic Programming", "topic_id": "dp", "score": 43, "attempts": 7},
-    ]
-    for d in defaults:
-        if not any(x["topic"] == d["topic"] for x in out):
-            out.append(d)
+    # If fewer than 8 topics attempted yet, include real major curriculum chapters showing actual 0% progress
+    if len(out) < 8:
+        curric_rows = conn.execute("""
+            SELECT book_id, chapter, chapter_title
+            FROM chunks
+            WHERE chapter IS NOT NULL AND chapter != ''
+            GROUP BY book_id, chapter
+            ORDER BY MIN(id) ASC
+        """).fetchall()
+        for c in curric_rows:
+            ch_title = c["chapter_title"] or f"Chapter {c['chapter']}"
+            t_name = f"{c['book_id']}: {ch_title}"
+            if t_name not in seen:
+                seen.add(t_name)
+                out.append({
+                    "topic": t_name,
+                    "topic_id": f"{c['book_id']}_{c['chapter']}",
+                    "book_id": c["book_id"],
+                    "chapter": str(c["chapter"]),
+                    "score": 0,
+                    "attempts": 0,
+                    "correct": 0,
+                    "last_evaluated": "Unattempted"
+                })
+                if len(out) >= 8:
+                    break
+
     return out
 
 
@@ -1625,4 +2348,814 @@ def update_profile_endpoint(body: ProfileUpdateIn):
 def get_system_settings_endpoint():
     """Get backend system, vector database, and local LLM diagnostics."""
     return run_db(_get_system_settings)
+
+
+# =============================================================================
+# 5c. SYLLABUS INTELLIGENCE  (chapter-to-exam segmentation: T1 / T2 / T3)
+# =============================================================================
+
+def _ensure_default_partitions(conn, book_id: str):
+    """If book has no exam map entries, partition 33.33% each into T1, T2, T3 automatically."""
+    book = book_id.upper()
+    existing = conn.execute("SELECT COUNT(*) FROM syllabus_exam_map WHERE book_id=?", (book,)).fetchone()[0]
+    if existing == 0:
+        _auto_partition_syllabus(conn, book)
+
+
+def _get_syllabus_chapters(conn, book_id: str) -> List[Dict[str, Any]]:
+    """All chapters of a book with their exam slot assignment (or None if unassigned)."""
+    rows = conn.execute(
+        "SELECT c.chapter, c.chapter_title, COUNT(c.id) AS chunks, e.exam_slot, e.position "
+        "FROM chunks c LEFT JOIN syllabus_exam_map e "
+        "  ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+        "WHERE c.book_id=? "
+        "GROUP BY c.chapter, c.chapter_title "
+        "ORDER BY MIN(c.id)",
+        (book_id.upper(),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _assign_exam_slot(conn, book_id: str, chapter: str, exam_slot: str) -> Dict[str, Any]:
+    """Assign or update a chapter's exam slot."""
+    slot = exam_slot.upper()
+    if slot not in ('T1', 'T2', 'T3'):
+        raise ValueError(f"exam_slot must be T1, T2, or T3; got {exam_slot!r}")
+    n = conn.execute(
+        "SELECT COUNT(*) FROM syllabus_exam_map WHERE book_id=? AND exam_slot=?",
+        (book_id.upper(), slot)).fetchone()[0]
+    conn.execute(
+        "INSERT INTO syllabus_exam_map (book_id, chapter, exam_slot, position, updated_at) "
+        "VALUES (?,?,?,?,CURRENT_TIMESTAMP) "
+        "ON CONFLICT(book_id, chapter) DO UPDATE SET "
+        "  exam_slot=excluded.exam_slot, position=excluded.position, updated_at=CURRENT_TIMESTAMP",
+        (book_id.upper(), str(chapter).strip(), slot, n))
+    conn.commit()
+    return {"book_id": book_id.upper(), "chapter": chapter, "exam_slot": slot}
+
+
+def _bulk_assign_exam_slots(conn, book_id: str, assignments: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Bulk assign chapters to exam slots from a list of {chapter, exam_slot}."""
+    for a in assignments:
+        slot = a['exam_slot'].upper()
+        if slot not in ('T1', 'T2', 'T3'):
+            raise ValueError(f"Invalid exam_slot {slot!r}")
+    conn.execute("DELETE FROM syllabus_exam_map WHERE book_id=?", (book_id.upper(),))
+    slot_counters: Dict[str, int] = {'T1': 0, 'T2': 0, 'T3': 0}
+    for a in assignments:
+        slot = a['exam_slot'].upper()
+        conn.execute(
+            "INSERT INTO syllabus_exam_map (book_id, chapter, exam_slot, position) VALUES (?,?,?,?)",
+            (book_id.upper(), str(a['chapter']).strip(), slot, slot_counters[slot]))
+        slot_counters[slot] += 1
+    conn.commit()
+    return {"saved": len(assignments), "book_id": book_id.upper()}
+
+
+def _auto_partition_syllabus(conn, book_id: str) -> Dict[str, Any]:
+    """Auto-partition chapters equally (33.33% each): T1 (first 1/3), T2 (middle 1/3), T3 (remaining 1/3)."""
+    book = book_id.upper()
+    rows = conn.execute(
+        "SELECT chapter FROM chunks WHERE book_id=? GROUP BY chapter ORDER BY MIN(id)",
+        (book,)).fetchall()
+    chapters = [str(r[0]) for r in rows]
+    total = len(chapters)
+    if total == 0:
+        return {"saved": 0, "book_id": book}
+    t1_end = max(1, round(total / 3))
+    t2_end = max(t1_end + 1, round(2 * total / 3))
+    assignments = []
+    for i, ch in enumerate(chapters):
+        if i < t1_end:
+            slot = 'T1'
+        elif i < t2_end:
+            slot = 'T2'
+        else:
+            slot = 'T3'
+        assignments.append({'chapter': ch, 'exam_slot': slot})
+    return _bulk_assign_exam_slots(conn, book, assignments)
+
+
+def _get_syllabus_view(conn, book_id: str, view: str) -> Dict[str, Any]:
+    """
+    Returns chapters filtered by exam view.
+    view: 'T1' | 'T2' | 'T3' | 'T1+T2' | 'ALL'
+    T1: First 33.33%
+    T2: Middle 33.33%
+    T1+T2: T1 + T2 cumulative (66.67%)
+    T3: Whole syllabus (100% of chapters: T1 + T2 + T3)
+    """
+    book = book_id.upper()
+    _ensure_default_partitions(conn, book)
+    all_chapters = _get_syllabus_chapters(conn, book)
+    v = view.upper().replace('%2B', '+')
+    if v in ('T3', 'ALL'):
+        # T3 covers the whole syllabus (T1 + T2 + remaining T3)
+        return {"book_id": book, "view": view, "chapters": all_chapters, "total": len(all_chapters)}
+    if v in ('T1+T2',):
+        slots = ('T1', 'T2')
+    elif v in ('T1', 'T2'):
+        slots = (v,)
+    else:
+        raise ValueError(f"view must be T1 | T2 | T3 | T1+T2 | ALL; got {view!r}")
+    filtered = [c for c in all_chapters if c.get('exam_slot') in slots]
+    return {"book_id": book, "view": view, "chapters": filtered, "total": len(filtered)}
+
+
+def _get_syllabus_summary(conn, book_id: str) -> Dict[str, Any]:
+    """Summary counts per exam slot with chapter titles."""
+    book = book_id.upper()
+    _ensure_default_partitions(conn, book)
+    chapters = _get_syllabus_chapters(conn, book)
+    t1 = [c for c in chapters if c.get('exam_slot') == 'T1']
+    t2 = [c for c in chapters if c.get('exam_slot') == 'T2']
+    t3_new = [c for c in chapters if c.get('exam_slot') == 'T3']
+    unassigned = [c for c in chapters if not c.get('exam_slot')]
+    return {
+        "book_id": book,
+        "T1": {"chapters": t1, "count": len(t1)},
+        "T2": {"chapters": t2, "count": len(t2)},
+        "T3": {
+            "chapters": chapters,  # T3 covers the whole syllabus!
+            "count": len(chapters),
+            "new_chapters": t3_new,
+            "new_count": len(t3_new),
+        },
+        "T1_plus_T2": {
+            "chapters": t1 + t2,
+            "count": len(t1) + len(t2)
+        },
+        "unassigned": {"chapters": unassigned, "count": len(unassigned)},
+        "total_chapters": len(chapters)
+    }
+
+
+# =============================================================================
+# SYLLABUS INTELLIGENCE API ENDPOINTS
+# =============================================================================
+
+class SyllabusAssignIn(BaseModel):
+    book_id: str
+    chapter: str
+    exam_slot: Literal["T1", "T2", "T3"]
+
+
+class SyllabusBulkAssignIn(BaseModel):
+    book_id: str
+    assignments: List[Dict[str, str]]   # [{chapter: "1", exam_slot: "T1"}, ...]
+
+
+@app.get("/syllabus/{book_id}")
+def syllabus_summary_endpoint(book_id: str):
+    """Full syllabus summary: chapters split into T1, T2, T3, T1+T2 combined (T3 contains whole syllabus)."""
+    return run_db(_get_syllabus_summary, book_id)
+
+
+@app.get("/syllabus/{book_id}/view")
+def syllabus_view_endpoint(book_id: str, slot: str = "ALL"):
+    """Get chapters for a specific exam view: T1 | T2 | T3 (whole syllabus) | T1+T2 | ALL"""
+    try:
+        return run_db(_get_syllabus_view, book_id, slot)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/syllabus/assign")
+def syllabus_assign_endpoint(body: SyllabusAssignIn):
+    """Assign a single chapter to an exam slot (T1/T2/T3)."""
+    try:
+        return run_db(_assign_exam_slot, body.book_id, body.chapter, body.exam_slot)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/syllabus/bulk-assign")
+def syllabus_bulk_assign_endpoint(body: SyllabusBulkAssignIn):
+    """Bulk assign chapters to exam slots, replacing all existing assignments for the book."""
+    try:
+        return run_db(_bulk_assign_exam_slots, body.book_id, body.assignments)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/syllabus/{book_id}/reset-partition")
+def syllabus_reset_partition_endpoint(book_id: str):
+    """Reset book to standard 33.33% partition for T1, T2, T3."""
+    try:
+        return run_db(_auto_partition_syllabus, book_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# 5d. PREREQUISITE ENGINE  (Dependency Graphs, Mastery Tracking, & Learning Paths)
+# =============================================================================
+
+def _get_prerequisite_graph(conn, book_id: str, student_id: str = "default") -> Dict[str, Any]:
+    """Generates the prerequisite graph, mastery states, and personalized learning sequence."""
+    book = book_id.upper()
+    _ensure_default_partitions(conn, book)
+    chapters = _get_syllabus_chapters(conn, book)
+
+    # Load student mastery
+    mastery_rows = conn.execute(
+        "SELECT chapter, theta, attempts, correct FROM adaptive_mastery WHERE student_id=? AND book_id=?",
+        (student_id, book)
+    ).fetchall()
+    mastery_map: Dict[str, Dict[str, Any]] = {
+        str(r[0]): {"theta": r[1], "attempts": r[2], "correct": r[3]} for r in mastery_rows
+    }
+
+    # Load raw prerequisites and compute reverse dependencies ("unlocks")
+    prereq_rows = conn.execute(
+        "SELECT chapter, prereq_chapter FROM chapter_prereqs WHERE book_id=?",
+        (book,)
+    ).fetchall()
+
+    direct_prereqs: Dict[str, List[str]] = {}
+    direct_unlocks: Dict[str, List[str]] = {}
+    for ch, p_ch in prereq_rows:
+        ch_s = str(ch)
+        p_s = str(p_ch)
+        direct_prereqs.setdefault(ch_s, []).append(p_s)
+        direct_unlocks.setdefault(p_s, []).append(ch_s)
+
+    title_map = {str(c["chapter"]): (c.get("chapter_title") or f"Chapter {c['chapter']}") for c in chapters}
+    slot_map = {str(c["chapter"]): (c.get("exam_slot") or "T1") for c in chapters}
+
+    nodes: List[Dict[str, Any]] = []
+    completed_cnt = 0
+    weak_cnt = 0
+    pending_cnt = 0
+
+    for c in chapters:
+        ch_s = str(c["chapter"])
+        m = mastery_map.get(ch_s)
+        theta = round(m["theta"], 2) if m else 0.5
+        attempts = m["attempts"] if m else 0
+        correct = m["correct"] if m else 0
+
+        # Status classification
+        if attempts >= 2 and theta >= 0.55:
+            status = "completed"
+            completed_cnt += 1
+        elif attempts >= 1 and (theta < 0.55 or (correct / max(1, attempts)) < 0.5):
+            status = "weak"
+            weak_cnt += 1
+        elif attempts >= 1:
+            status = "completed"
+            completed_cnt += 1
+        else:
+            status = "pending"
+            pending_cnt += 1
+
+        prereq_details = [
+            {"chapter": p, "title": title_map.get(p, f"Chapter {p}"), "exam_slot": slot_map.get(p, "T1")}
+            for p in direct_prereqs.get(ch_s, [])
+        ]
+        unlock_details = [
+            {"chapter": u, "title": title_map.get(u, f"Chapter {u}"), "exam_slot": slot_map.get(u, "T1")}
+            for u in direct_unlocks.get(ch_s, [])
+        ]
+
+        nodes.append({
+            "chapter": ch_s,
+            "chapter_title": c.get("chapter_title"),
+            "exam_slot": slot_map.get(ch_s, "T1"),
+            "chunks": c.get("chunks", 0),
+            "status": status,
+            "theta": theta,
+            "attempts": attempts,
+            "correct": correct,
+            "accuracy": round((correct / attempts) * 100, 1) if attempts > 0 else 0.0,
+            "prerequisites": prereq_details,
+            "unlocks": unlock_details,
+        })
+
+    total_chapters = len(nodes)
+    readiness_pct = round((completed_cnt / max(1, total_chapters)) * 100, 1)
+
+    # Build topological personalized learning sequence
+    # Sort order: unmet/weak prerequisites first, then level/tier progression
+    in_degree = {n["chapter"]: len(direct_prereqs.get(n["chapter"], [])) for n in nodes}
+    node_by_ch = {n["chapter"]: n for n in nodes}
+
+    ready_queue = [ch for ch, deg in in_degree.items() if deg == 0]
+    # Priority: weak prerequisites first (remediation), then pending, then completed
+    def _priority(ch: str) -> tuple:
+        st = node_by_ch[ch]["status"]
+        st_order = 0 if st == "weak" else (1 if st == "pending" else 2)
+        slot_order = 0 if node_by_ch[ch]["exam_slot"] == "T1" else (1 if node_by_ch[ch]["exam_slot"] == "T2" else 2)
+        try:
+            num = int(re.sub(r"\D", "", ch) or 0)
+        except Exception:
+            num = 0
+        return (st_order, slot_order, num)
+
+    ready_queue.sort(key=_priority)
+
+    sequence: List[Dict[str, Any]] = []
+    visited = set()
+    step = 1
+
+    while ready_queue:
+        curr = ready_queue.pop(0)
+        if curr in visited:
+            continue
+        visited.add(curr)
+        n = node_by_ch[curr]
+
+        # Recommendation note
+        if n["status"] == "weak":
+            rec_note = "Action Required: Re-study weak foundational concepts before progressing."
+        elif n["status"] == "completed":
+            rec_note = "Mastered: Review periodically or proceed to downstream topics."
+        else:
+            if not direct_prereqs.get(curr):
+                rec_note = "Ready to Begin: Foundational starting point with no prerequisites."
+            else:
+                unmet = [p for p in direct_prereqs.get(curr, []) if node_by_ch.get(p, {}).get("status") != "completed"]
+                if unmet:
+                    rec_note = f"Blocked: Complete prerequisite Ch. {', '.join(unmet)} first."
+                else:
+                    rec_note = "Ready to Study: All foundational prerequisites have been satisfied."
+
+        sequence.append({
+            "step": step,
+            "chapter": curr,
+            "chapter_title": n["chapter_title"],
+            "exam_slot": n["exam_slot"],
+            "status": n["status"],
+            "theta": n["theta"],
+            "recommendation": rec_note,
+            "prerequisites": n["prerequisites"],
+            "unlocks_count": len(n["unlocks"]),
+        })
+        step += 1
+
+        for neighbor in direct_unlocks.get(curr, []):
+            if neighbor not in visited and neighbor in in_degree:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] <= 0:
+                    ready_queue.append(neighbor)
+        ready_queue.sort(key=_priority)
+
+    # Add any remaining nodes (in case of cycles or isolated chapters)
+    for n in nodes:
+        if n["chapter"] not in visited:
+            sequence.append({
+                "step": step,
+                "chapter": n["chapter"],
+                "chapter_title": n["chapter_title"],
+                "exam_slot": n["exam_slot"],
+                "status": n["status"],
+                "theta": n["theta"],
+                "recommendation": "Independent Topic: Can be studied alongside current tier.",
+                "prerequisites": n["prerequisites"],
+                "unlocks_count": len(n["unlocks"]),
+            })
+            step += 1
+
+    return {
+        "book_id": book,
+        "student_id": student_id,
+        "nodes": nodes,
+        "summary": {
+            "total_chapters": total_chapters,
+            "completed": completed_cnt,
+            "weak": weak_cnt,
+            "pending": pending_cnt,
+            "readiness_percentage": readiness_pct,
+        },
+        "learning_sequence": sequence,
+    }
+
+
+# =============================================================================
+# 5e. FULL MOCK EXAM ENGINE (T1 Midterm / T2 Midterm / T3 Comprehensive Final)
+# =============================================================================
+
+def _create_mock_exam(conn, student_id: str, book_id: str, exam_type: str = "T3",
+                       question_count: int = 30, duration_min: int = 45) -> Dict[str, Any]:
+    """Generates a timed full mock exam session mapped to T1, T2, or T3 comprehensive scope."""
+    book = book_id.upper()
+    _ensure_default_partitions(conn, book)
+    e_type = exam_type.upper()
+
+    titles = {
+        "T1": f"{BOOK_TITLES.get(book, book)} — Test 1 (T1) Midterm Examination",
+        "T2": f"{BOOK_TITLES.get(book, book)} — Test 2 (T2) Midterm Examination",
+        "T3": f"{BOOK_TITLES.get(book, book)} — Test 3 (T3) Comprehensive Final Examination",
+        "T3_FULL": f"{BOOK_TITLES.get(book, book)} — Test 3 (T3) Comprehensive Final Examination",
+        "CUSTOM": f"{BOOK_TITLES.get(book, book)} — Custom Mock Examination",
+    }
+    title = titles.get(e_type, f"{book} Mock Examination")
+
+    # Fetch pool of questions categorized by exam slot
+    rows = conn.execute(
+        "SELECT q.id, q.question, q.options_json, q.difficulty, c.chapter, c.chapter_title, c.page_start, e.exam_slot "
+        "FROM question_bank q "
+        "JOIN chunks c ON c.chunk_id=q.chunk_id "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+        "WHERE c.book_id=? AND q.verified=1 AND q.qtype='mcq'",
+        (book,)).fetchall()
+
+    pool_all = [dict(r) for r in rows]
+    pool_t1 = [r for r in pool_all if r.get("exam_slot") == "T1"]
+    pool_t2 = [r for r in pool_all if r.get("exam_slot") == "T2"]
+    pool_t3 = [r for r in pool_all if r.get("exam_slot") == "T3"]
+
+    selected_questions: List[Dict[str, Any]] = []
+
+    if e_type == "T1":
+        source = pool_t1 if pool_t1 else pool_all
+        selected_questions = random.sample(source, min(len(source), question_count))
+    elif e_type == "T2":
+        source = pool_t2 if pool_t2 else pool_all
+        selected_questions = random.sample(source, min(len(source), question_count))
+    else:
+        # T3 / Comprehensive Final: 30% T1, 30% T2, 40% T3
+        cnt_t1 = max(1, round(question_count * 0.3))
+        cnt_t2 = max(1, round(question_count * 0.3))
+        cnt_t3 = max(1, question_count - cnt_t1 - cnt_t2)
+
+        chosen_ids = set()
+        for pool, cnt in ((pool_t1, cnt_t1), (pool_t2, cnt_t2), (pool_t3, cnt_t3)):
+            sample = random.sample(pool, min(len(pool), cnt)) if pool else []
+            for q in sample:
+                if q["id"] not in chosen_ids:
+                    selected_questions.append(q)
+                    chosen_ids.add(q["id"])
+
+        if len(selected_questions) < question_count:
+            remaining = [q for q in pool_all if q["id"] not in chosen_ids]
+            needed = question_count - len(selected_questions)
+            if remaining:
+                selected_questions.extend(random.sample(remaining, min(len(remaining), needed)))
+
+    if not selected_questions:
+        raise ValueError(f"No questions currently available in question bank for {book}. Please prefill bank first.")
+
+    random.shuffle(selected_questions)
+
+    # Fetch prerequisites
+    prereq_rows = conn.execute(
+        "SELECT p.chapter, p.prereq_chapter, c.chapter_title, e.exam_slot FROM chapter_prereqs p "
+        "LEFT JOIN chunks c ON c.book_id=p.book_id AND c.chapter=p.prereq_chapter "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=p.book_id AND e.chapter=p.prereq_chapter "
+        "WHERE p.book_id=? GROUP BY p.chapter, p.prereq_chapter",
+        (book,)).fetchall()
+    prereq_by_chap: Dict[str, list] = {}
+    for ch, p_ch, p_title, p_slot in prereq_rows:
+        ch_s = str(ch)
+        if ch_s not in prereq_by_chap:
+            prereq_by_chap[ch_s] = []
+        prereq_by_chap[ch_s].append({
+            "chapter": str(p_ch),
+            "title": p_title or f"Chapter {p_ch}",
+            "exam_slot": p_slot or "T1"
+        })
+
+    blueprint = {
+        "book_id": book,
+        "exam_type": e_type,
+        "title": title,
+        "question_count": len(selected_questions),
+        "duration_min": duration_min,
+        "t1_count": sum(1 for q in selected_questions if q.get("exam_slot") == "T1"),
+        "t2_count": sum(1 for q in selected_questions if q.get("exam_slot") == "T2"),
+        "t3_count": sum(1 for q in selected_questions if q.get("exam_slot") == "T3"),
+    }
+
+    started_at = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        "INSERT INTO mock_exams (student_id, blueprint_json, started_at, duration_min, book_id, exam_type, total_questions) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (student_id, json.dumps(blueprint), started_at, duration_min, book, e_type, len(selected_questions))
+    )
+    exam_id = cur.lastrowid
+
+    public_questions = []
+    for pos, q in enumerate(selected_questions, start=1):
+        conn.execute(
+            "INSERT INTO mock_exam_items (exam_id, question_id, position, answer_given, marks_awarded) VALUES (?,?,?,NULL,NULL)",
+            (exam_id, q["id"], pos)
+        )
+        opts = json.loads(q["options_json"]) if q.get("options_json") else []
+        chap_s = str(q.get("chapter") or "")
+        public_questions.append({
+            "id": q["id"],
+            "position": pos,
+            "question": q["question"],
+            "options": opts,
+            "difficulty": q["difficulty"],
+            "chapter": chap_s,
+            "chapter_title": q.get("chapter_title"),
+            "page_start": q.get("page_start"),
+            "exam_slot": q.get("exam_slot") or "T1",
+            "prerequisites": prereq_by_chap.get(chap_s, [])
+        })
+
+    conn.commit()
+
+    return {
+        "exam_id": exam_id,
+        "book_id": book,
+        "exam_type": e_type,
+        "title": title,
+        "duration_min": duration_min,
+        "total_questions": len(public_questions),
+        "started_at": started_at,
+        "blueprint": blueprint,
+        "questions": public_questions
+    }
+
+
+def _get_mock_exam(conn, exam_id: int) -> Dict[str, Any]:
+    """Retrieve an active or finished mock exam."""
+    exam = conn.execute("SELECT * FROM mock_exams WHERE id=?", (exam_id,)).fetchone()
+    if not exam:
+        raise KeyError(f"Mock exam {exam_id} not found")
+
+    items = conn.execute(
+        "SELECT m.position, m.question_id, m.answer_given, m.marks_awarded, "
+        "q.question, q.options_json, q.difficulty, q.answer, q.explanation, "
+        "c.book_id, c.chapter, c.chapter_title, c.page_start, e.exam_slot "
+        "FROM mock_exam_items m "
+        "JOIN question_bank q ON q.id=m.question_id "
+        "LEFT JOIN chunks c ON c.chunk_id=q.chunk_id "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+        "WHERE m.exam_id=? ORDER BY m.position",
+        (exam_id,)).fetchall()
+
+    is_completed = exam["submitted_at"] is not None
+    bp = json.loads(exam["blueprint_json"]) if exam["blueprint_json"] else {}
+
+    questions = []
+    for it in items:
+        opts = json.loads(it["options_json"]) if it["options_json"] else []
+        q_data = {
+            "position": it["position"],
+            "question_id": it["question_id"],
+            "question": it["question"],
+            "options": opts,
+            "difficulty": it["difficulty"],
+            "chapter": str(it["chapter"] or ""),
+            "chapter_title": it["chapter_title"],
+            "page_start": it["page_start"],
+            "exam_slot": it["exam_slot"] or "T1",
+            "answer_given": it["answer_given"]
+        }
+        if is_completed:
+            q_data["correct_answer"] = it["answer"]
+            q_data["explanation"] = it["explanation"]
+            q_data["marks_awarded"] = it["marks_awarded"]
+        questions.append(q_data)
+
+    return {
+        "exam_id": exam["id"],
+        "student_id": exam["student_id"],
+        "book_id": exam["book_id"] or bp.get("book_id"),
+        "exam_type": exam["exam_type"] or bp.get("exam_type", "T3"),
+        "title": bp.get("title", "Mock Examination"),
+        "duration_min": exam["duration_min"],
+        "started_at": exam["started_at"],
+        "submitted_at": exam["submitted_at"],
+        "score": exam["score"],
+        "total_questions": len(items),
+        "is_completed": is_completed,
+        "questions": questions
+    }
+
+
+def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_sec: int = 0) -> Dict[str, Any]:
+    """Grade mock exam, compute tier analytics, and diagnose prerequisite gaps."""
+    exam = conn.execute("SELECT * FROM mock_exams WHERE id=?", (exam_id,)).fetchone()
+    if not exam:
+        raise KeyError(f"Mock exam {exam_id} not found")
+
+    items = conn.execute(
+        "SELECT m.position, m.question_id, q.question, q.options_json, q.answer, q.explanation, "
+        "c.book_id, c.chapter, c.chapter_title, c.page_start, e.exam_slot "
+        "FROM mock_exam_items m "
+        "JOIN question_bank q ON q.id=m.question_id "
+        "LEFT JOIN chunks c ON c.chunk_id=q.chunk_id "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+        "WHERE m.exam_id=? ORDER BY m.position",
+        (exam_id,)).fetchall()
+
+    book = exam["book_id"] or (items[0]["book_id"] if items else "CLRS")
+
+    # Load prerequisites
+    prereq_rows = conn.execute(
+        "SELECT p.chapter, p.prereq_chapter, c.chapter_title, e.exam_slot FROM chapter_prereqs p "
+        "LEFT JOIN chunks c ON c.book_id=p.book_id AND c.chapter=p.prereq_chapter "
+        "LEFT JOIN syllabus_exam_map e ON e.book_id=p.book_id AND e.chapter=p.prereq_chapter "
+        "WHERE p.book_id=? GROUP BY p.chapter, p.prereq_chapter",
+        (book,)).fetchall()
+    prereq_by_chap: Dict[str, list] = {}
+    for ch, p_ch, p_title, p_slot in prereq_rows:
+        ch_s = str(ch)
+        if ch_s not in prereq_by_chap:
+            prereq_by_chap[ch_s] = []
+        prereq_by_chap[ch_s].append({
+            "chapter": str(p_ch),
+            "title": p_title or f"Chapter {p_ch}",
+            "exam_slot": p_slot or "T1"
+        })
+
+    correct_count = 0
+    total_count = len(items)
+    tier_stats = {
+        "T1": {"asked": 0, "correct": 0},
+        "T2": {"asked": 0, "correct": 0},
+        "T3": {"asked": 0, "correct": 0}
+    }
+    missed_prereq_counts: Dict[str, Dict[str, Any]] = {}
+    review_items = []
+
+    for item in items:
+        qid_str = str(item["question_id"])
+        pos_str = str(item["position"])
+        given_raw = answers.get(qid_str) or answers.get(pos_str) or ""
+        given = given_raw.strip().upper()[:1] if given_raw else None
+        correct_letter = str(item["answer"]).strip().upper()[:1]
+        is_correct = (given == correct_letter)
+
+        slot = item["exam_slot"] or "T1"
+        if slot not in tier_stats:
+            tier_stats[slot] = {"asked": 0, "correct": 0}
+        tier_stats[slot]["asked"] += 1
+
+        mark = 1.0 if is_correct else 0.0
+        if is_correct:
+            correct_count += 1
+            tier_stats[slot]["correct"] += 1
+        else:
+            chap_s = str(item["chapter"] or "")
+            for p in prereq_by_chap.get(chap_s, []):
+                p_key = p["chapter"]
+                if p_key not in missed_prereq_counts:
+                    missed_prereq_counts[p_key] = {
+                        "chapter": p_key,
+                        "title": p["title"],
+                        "exam_slot": p["exam_slot"],
+                        "missed_count": 0
+                    }
+                missed_prereq_counts[p_key]["missed_count"] += 1
+
+        conn.execute(
+            "UPDATE mock_exam_items SET answer_given=?, marks_awarded=? WHERE exam_id=? AND question_id=?",
+            (given, mark, exam_id, item["question_id"])
+        )
+
+        opts = json.loads(item["options_json"]) if item["options_json"] else []
+        idx = "ABCD".find(correct_letter) if correct_letter in "ABCD" else -1
+        correct_text = opts[idx] if 0 <= idx < len(opts) else None
+
+        review_items.append({
+            "position": item["position"],
+            "question_id": item["question_id"],
+            "question": item["question"],
+            "options": opts,
+            "answer_given": given,
+            "correct_answer": correct_letter,
+            "correct_answer_text": correct_text,
+            "is_correct": is_correct,
+            "marks_awarded": mark,
+            "explanation": item["explanation"],
+            "chapter": str(item["chapter"] or ""),
+            "chapter_title": item["chapter_title"],
+            "page_start": item["page_start"],
+            "exam_slot": slot,
+            "prerequisites": prereq_by_chap.get(str(item["chapter"] or ""), [])
+        })
+
+    score = float(correct_count)
+    pct = round((score / max(1, total_count)) * 100, 1)
+    grade = "A+" if pct >= 90 else "A" if pct >= 80 else "B" if pct >= 70 else "C" if pct >= 60 else "D" if pct >= 50 else "F"
+
+    for s_key in tier_stats:
+        a = tier_stats[s_key]["asked"]
+        c = tier_stats[s_key]["correct"]
+        tier_stats[s_key]["accuracy"] = round((c / a) * 100, 1) if a > 0 else 0.0
+
+    prereq_recs = sorted(missed_prereq_counts.values(), key=lambda x: x["missed_count"], reverse=True)
+
+    conn.execute(
+        "UPDATE mock_exams SET submitted_at=CURRENT_TIMESTAMP, score=?, time_spent_sec=? WHERE id=?",
+        (score, time_spent_sec, exam_id)
+    )
+    conn.commit()
+
+    bp = json.loads(exam["blueprint_json"]) if exam["blueprint_json"] else {}
+
+    return {
+        "exam_id": exam_id,
+        "book_id": book,
+        "exam_type": exam["exam_type"] or bp.get("exam_type", "T3"),
+        "title": bp.get("title", f"{book} Mock Examination"),
+        "score": score,
+        "total_marks": total_count,
+        "percentage": pct,
+        "grade": grade,
+        "time_spent_sec": time_spent_sec,
+        "accuracy_by_tier": tier_stats,
+        "prerequisite_recommendations": prereq_recs[:6],
+        "review_items": review_items
+    }
+
+
+def _list_mock_exams(conn, student_id: str, book_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List student's past mock exams and results."""
+    where = ["student_id=?"]
+    params: list = [student_id]
+    if book_id:
+        where.append("book_id=?")
+        params.append(book_id.upper())
+    rows = conn.execute(
+        "SELECT id, student_id, blueprint_json, started_at, duration_min, submitted_at, score, "
+        "book_id, exam_type, total_questions, time_spent_sec "
+        "FROM mock_exams WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT 50",
+        params).fetchall()
+    out = []
+    for r in rows:
+        bp = json.loads(r["blueprint_json"]) if r["blueprint_json"] else {}
+        total = r["total_questions"] or bp.get("question_count") or 0
+        sc = r["score"]
+        pct = round((sc / total) * 100, 1) if (sc is not None and total > 0) else None
+        out.append({
+            "id": r["id"],
+            "book_id": r["book_id"] or bp.get("book_id"),
+            "exam_type": r["exam_type"] or bp.get("exam_type", "T3"),
+            "title": bp.get("title", "Mock Examination"),
+            "started_at": r["started_at"],
+            "submitted_at": r["submitted_at"],
+            "duration_min": r["duration_min"],
+            "time_spent_sec": r["time_spent_sec"],
+            "score": sc,
+            "total_questions": total,
+            "percentage": pct,
+            "is_completed": r["submitted_at"] is not None
+        })
+    return out
+
+
+# =============================================================================
+# PREREQUISITE & MOCK EXAM API ENDPOINTS
+# =============================================================================
+
+@app.get("/prerequisites/{book_id}")
+def prerequisite_graph_endpoint(book_id: str, student_id: str = "default"):
+    """Prerequisite network, student mastery states, and personalized learning sequence."""
+    try:
+        return run_db(_get_prerequisite_graph, book_id, student_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class MockExamCreateIn(BaseModel):
+    student_id: str = "default"
+    book_id: str
+    exam_type: Literal["T1", "T2", "T3", "T3_FULL", "CUSTOM"] = "T3"
+    question_count: int = Field(30, ge=5, le=60)
+    duration_min: int = Field(45, ge=5, le=180)
+
+
+class MockExamSubmitIn(BaseModel):
+    answers: Dict[str, str]  # { "question_id" or "position": "A" }
+    time_spent_sec: int = 0
+
+
+@app.post("/mock-exam/create")
+def mock_exam_create_endpoint(body: MockExamCreateIn):
+    """Generate a timed full mock exam for T1, T2, or T3 comprehensive syllabus."""
+    try:
+        return run_db(_create_mock_exam, body.student_id, body.book_id, body.exam_type, body.question_count, body.duration_min)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/mock-exam/{exam_id}")
+def mock_exam_get_endpoint(exam_id: int):
+    """Retrieve an active or finished mock exam."""
+    try:
+        return run_db(_get_mock_exam, exam_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/mock-exam/{exam_id}/submit")
+def mock_exam_submit_endpoint(exam_id: int, body: MockExamSubmitIn):
+    """Submit a mock exam, grade results, and diagnose prerequisite gaps."""
+    try:
+        return run_db(_submit_mock_exam, exam_id, body.answers, body.time_spent_sec)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/mock-exam/history/{student_id}")
+def mock_exam_history_endpoint(student_id: str, book_id: Optional[str] = None):
+    """List historical mock exam attempts for a student."""
+    return run_db(_list_mock_exams, student_id, book_id)
+
 

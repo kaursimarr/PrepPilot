@@ -137,6 +137,130 @@ export async function getSystemSettings() {
   return request('/settings/system')
 }
 
+// 6. Adaptive Quiz & Mastery Intelligence
+export async function startAdaptiveQuiz(studentId = 'default', bookId = 'CLRS', chapter = null, maxQuestions = 10) {
+  const body = { student_id: studentId, book_id: bookId, max_questions: maxQuestions }
+  if (chapter) body.chapter = String(chapter).trim()
+  return request('/adaptive/start', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function submitAdaptiveAnswer(sessionId, questionId, answer, timeMs = null) {
+  return request('/adaptive/answer', {
+    method: 'POST',
+    body: JSON.stringify({
+      session_id: sessionId,
+      question_id: questionId,
+      answer: String(answer).toUpperCase(),
+      time_ms: timeMs,
+    }),
+  })
+}
+
+export async function getAdaptiveSession(sessionId) {
+  return request(`/adaptive/session/${sessionId}`)
+}
+
+export async function getAdaptiveCurrentQuestion(sessionId) {
+  return request(`/adaptive/session/${sessionId}/question`)
+}
+
+export async function getAdaptiveProgress(studentId = 'default', bookId = null) {
+  const q = bookId ? `?book_id=${encodeURIComponent(bookId)}` : ''
+  return request(`/adaptive/progress/${encodeURIComponent(studentId)}${q}`)
+}
+
+export async function flagAdaptiveQuestion(questionId) {
+  return request(`/questions/${questionId}/flag`, {
+    method: 'POST',
+  })
+}
+
+export async function getAdaptiveBank(bookId, chapter = null) {
+  const params = new URLSearchParams({ book_id: bookId })
+  if (chapter) params.append('chapter', String(chapter))
+  return request(`/adaptive/bank?${params.toString()}`)
+}
+
+export async function prefillAdaptiveBank(bookId, chapter = null, perLevel = 8) {
+  const body = { book_id: bookId, per_level: perLevel }
+  if (chapter) body.chapter = String(chapter).trim()
+  return request('/adaptive/prefill', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+// 7. Syllabus Intelligence
+export async function getSyllabus(bookId) {
+  return request(`/syllabus/${encodeURIComponent(bookId)}`)
+}
+
+export async function getSyllabusView(bookId, slot = 'ALL') {
+  return request(`/syllabus/${encodeURIComponent(bookId)}/view?slot=${encodeURIComponent(slot)}`)
+}
+
+export async function assignChapterToExam(bookId, chapter, examSlot) {
+  return request('/syllabus/assign', {
+    method: 'POST',
+    body: JSON.stringify({ book_id: bookId, chapter: String(chapter), exam_slot: examSlot }),
+  })
+}
+
+export async function bulkAssignSyllabus(bookId, assignments) {
+  return request('/syllabus/bulk-assign', {
+    method: 'POST',
+    body: JSON.stringify({ book_id: bookId, assignments }),
+  })
+}
+
+export async function resetSyllabusPartition(bookId) {
+  return request(`/syllabus/${encodeURIComponent(bookId)}/reset-partition`, {
+    method: 'POST',
+  })
+}
+
+// 8. Prerequisite Engine
+export async function getPrerequisiteGraph(bookId, studentId = 'default') {
+  return request(`/prerequisites/${encodeURIComponent(bookId)}?student_id=${encodeURIComponent(studentId)}`)
+}
+
+// 9. Full Mock Exam Engine
+export async function createMockExam(studentId = 'default', bookId = 'CLRS', examType = 'T3', questionCount = 30, durationMin = 45) {
+  return request('/mock-exam/create', {
+    method: 'POST',
+    body: JSON.stringify({
+      student_id: studentId,
+      book_id: bookId,
+      exam_type: examType,
+      question_count: questionCount,
+      duration_min: durationMin
+    })
+  })
+}
+
+export async function getMockExam(examId) {
+  return request(`/mock-exam/${encodeURIComponent(examId)}`)
+}
+
+export async function submitMockExam(examId, answers = {}, timeSpentSec = 0) {
+  return request(`/mock-exam/${encodeURIComponent(examId)}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({
+      answers,
+      time_spent_sec: timeSpentSec
+    })
+  })
+}
+
+export async function getMockExamHistory(studentId = 'default', bookId = null) {
+  const params = new URLSearchParams()
+  if (bookId) params.append('book_id', bookId)
+  return request(`/mock-exam/history/${encodeURIComponent(studentId)}${params.toString() ? `?${params.toString()}` : ''}`)
+}
+
 export const BOOK_TITLES = {
   DS: 'Data Structures (Handbook)',
   C: 'Let Us C',

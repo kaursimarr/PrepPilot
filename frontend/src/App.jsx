@@ -6,7 +6,7 @@ import {
   ArrowUpRight, Play, Send, Sparkles, CheckCircle2, Menu, X,
   LoaderCircle, RefreshCw, ChevronLeft, BookMarked, Save, Cpu
 } from 'lucide-react'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar } from 'recharts'
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid } from 'recharts'
 import {
   getHealth, askQuestion, getChapters, getQuestions, generateQuestions,
   getSubjects, getSubjectDetails, getOverviewStats, getProgressMastery, recordQuizAttempt,

@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Literal, Optional
 import numpy as np
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import urllib.error
 import urllib.request
@@ -307,6 +308,72 @@ CREATE TABLE IF NOT EXISTS syllabus_exam_map (
   UNIQUE(book_id, chapter));
 """
 
+PREREQ_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chapter_prereqs (
+  id INTEGER PRIMARY KEY,
+  book_id TEXT NOT NULL,
+  chapter TEXT NOT NULL,
+  prereq_chapter TEXT NOT NULL,
+  UNIQUE(book_id, chapter, prereq_chapter));
+"""
+
+DEFAULT_CHAPTER_PREREQS = [
+    # CLRS (Algorithms)
+    ("CLRS", "3", "2"),
+    ("CLRS", "4", "2"),
+    ("CLRS", "6", "2"),
+    ("CLRS", "7", "2"),
+    ("CLRS", "8", "7"),
+    ("CLRS", "10", "2"),
+    ("CLRS", "11", "10"),
+    ("CLRS", "12", "10"),
+    ("CLRS", "13", "12"),
+    ("CLRS", "15", "4"),
+    ("CLRS", "16", "15"),
+    ("CLRS", "22", "10"),
+    ("CLRS", "23", "22"),
+    ("CLRS", "24", "22"),
+    ("CLRS", "25", "24"),
+    # C (Let Us C)
+    ("C", "2", "1"),
+    ("C", "3", "2"),
+    ("C", "4", "3"),
+    ("C", "5", "4"),
+    ("C", "6", "5"),
+    ("C", "7", "5"),
+    ("C", "8", "5"),
+    ("C", "9", "5"),
+    ("C", "10", "9"),
+    ("C", "11", "10"),
+    ("C", "12", "11"),
+    ("C", "13", "11"),
+    ("C", "14", "12"),
+    # CPP (C++ Complete Reference)
+    ("CPP", "2", "1"),
+    ("CPP", "3", "2"),
+    ("CPP", "11", "3"),
+    ("CPP", "12", "11"),
+    ("CPP", "13", "11"),
+    ("CPP", "14", "11"),
+    ("CPP", "15", "14"),
+    ("CPP", "16", "14"),
+    ("CPP", "17", "11"),
+    ("CPP", "18", "11"),
+    ("CPP", "20", "16"),
+    # DS (Data Structures)
+    ("DS", "2", "1"),
+    ("DS", "3", "1"),
+    ("DS", "4", "3"),
+    ("DS", "5", "4"),
+    ("DS", "6", "4"),
+    ("DS", "7", "4"),
+    ("DS", "8", "7"),
+    ("DS", "9", "8"),
+    ("DS", "10", "9"),
+    ("DS", "11", "8"),
+    ("DS", "12", "3"),
+]
+
 # The sqlite-vec connection cannot be shared between threads, so ALL database work
 # (search, feature tables, later features) runs on this one dedicated worker thread.
 _pool = ThreadPoolExecutor(max_workers=1)
@@ -353,6 +420,17 @@ def _init() -> None:
     conn.executescript(FEATURE_SCHEMA)
     conn.executescript(ADAPTIVE_SCHEMA)
     conn.executescript(SYLLABUS_SCHEMA)
+    conn.executescript(PREREQ_SCHEMA)
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM chapter_prereqs").fetchone()[0]
+        if count == 0:
+            conn.executemany(
+                "INSERT OR IGNORE INTO chapter_prereqs (book_id, chapter, prereq_chapter) VALUES (?, ?, ?)",
+                DEFAULT_CHAPTER_PREREQS
+            )
+            conn.commit()
+    except Exception:
+        pass
     try:                                   # older DBs created before mastery_before existed
         conn.execute("ALTER TABLE adaptive_answers ADD COLUMN mastery_before REAL")
     except Exception:  # noqa: BLE001
@@ -1501,8 +1579,15 @@ async def add_cors_pna_header(request: Request, call_next):
         response.headers["Access-Control-Allow-Headers"] = "*"
         response.headers["Access-Control-Allow-Private-Network"] = "true"
         return response
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        response = JSONResponse(status_code=500, content={"detail": str(exc)})
     response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
     response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 

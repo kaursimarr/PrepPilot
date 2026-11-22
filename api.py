@@ -1978,7 +1978,7 @@ def _get_overview_stats(conn, student_id: str = "default"):
     n_books = conn.execute("SELECT COUNT(DISTINCT book_id) FROM chunks").fetchone()[0]
     total_chapters = conn.execute("SELECT COUNT(DISTINCT book_id || ':' || chapter) FROM chunks WHERE chapter IS NOT NULL AND chapter != ''").fetchone()[0]
 
-    # 2. Real quiz attempts across Adaptive Quiz, Mock Exams, and Legacy Quiz
+    # 2. Real quiz attempts across Adaptive Quiz, practice Exams, and Legacy Quiz
     ad_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(correct),0), COALESCE(SUM(time_ms),0) FROM adaptive_answers").fetchone()
     mock_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN marks_awarded > 0 THEN 1 ELSE 0 END),0) FROM mock_exam_items WHERE answer_given IS NOT NULL").fetchone()
     leg_row = conn.execute("SELECT COUNT(*), COALESCE(SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END),0) FROM quiz_attempts").fetchone()
@@ -2816,12 +2816,12 @@ def _get_prerequisite_graph(conn, book_id: str, student_id: str = "default") -> 
 
 
 # =============================================================================
-# 5e. FULL MOCK EXAM ENGINE (T1 Midterm / T2 Midterm / T3 Comprehensive Final)
+# 5e. FULL practice EXAM ENGINE (T1 Midterm / T2 Midterm / T3 Comprehensive Final)
 # =============================================================================
 
 def _create_mock_exam(conn, student_id: str, book_id: str, exam_type: str = "T3",
                        question_count: int = 30, duration_min: int = 45) -> Dict[str, Any]:
-    """Generates a timed full mock exam session mapped to T1, T2, or T3 comprehensive scope."""
+    """Generates a timed full practiceexam session mapped to T1, T2, or T3 comprehensive scope."""
     book = book_id.upper()
     _ensure_default_partitions(conn, book)
     e_type = exam_type.upper()
@@ -2831,9 +2831,9 @@ def _create_mock_exam(conn, student_id: str, book_id: str, exam_type: str = "T3"
         "T2": f"{BOOK_TITLES.get(book, book)} — Test 2 (T2) Midterm Examination",
         "T3": f"{BOOK_TITLES.get(book, book)} — Test 3 (T3) Comprehensive Final Examination",
         "T3_FULL": f"{BOOK_TITLES.get(book, book)} — Test 3 (T3) Comprehensive Final Examination",
-        "CUSTOM": f"{BOOK_TITLES.get(book, book)} — Custom Mock Examination",
+        "CUSTOM": f"{BOOK_TITLES.get(book, book)} — Custom practiceExamination",
     }
-    title = titles.get(e_type, f"{book} Mock Examination")
+    title = titles.get(e_type, f"{book} practiceExamination")
 
     # Fetch pool of questions categorized by exam slot
     rows = conn.execute(
@@ -2956,10 +2956,10 @@ def _create_mock_exam(conn, student_id: str, book_id: str, exam_type: str = "T3"
 
 
 def _get_mock_exam(conn, exam_id: int) -> Dict[str, Any]:
-    """Retrieve an active or finished mock exam."""
+    """Retrieve an active or finished practiceexam."""
     exam = conn.execute("SELECT * FROM mock_exams WHERE id=?", (exam_id,)).fetchone()
     if not exam:
-        raise KeyError(f"Mock exam {exam_id} not found")
+        raise KeyError(f"practice exam {exam_id} not found")
 
     items = conn.execute(
         "SELECT m.position, m.question_id, m.answer_given, m.marks_awarded, "
@@ -3001,7 +3001,7 @@ def _get_mock_exam(conn, exam_id: int) -> Dict[str, Any]:
         "student_id": exam["student_id"],
         "book_id": exam["book_id"] or bp.get("book_id"),
         "exam_type": exam["exam_type"] or bp.get("exam_type", "T3"),
-        "title": bp.get("title", "Mock Examination"),
+        "title": bp.get("title", "practice Examination"),
         "duration_min": exam["duration_min"],
         "started_at": exam["started_at"],
         "submitted_at": exam["submitted_at"],
@@ -3013,10 +3013,10 @@ def _get_mock_exam(conn, exam_id: int) -> Dict[str, Any]:
 
 
 def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_sec: int = 0) -> Dict[str, Any]:
-    """Grade mock exam, compute tier analytics, and diagnose prerequisite gaps."""
+    """Grade practice exam, compute tier analytics, and diagnose prerequisite gaps."""
     exam = conn.execute("SELECT * FROM mock_exams WHERE id=?", (exam_id,)).fetchone()
     if not exam:
-        raise KeyError(f"Mock exam {exam_id} not found")
+        raise KeyError(f"practice exam {exam_id} not found")
 
     items = conn.execute(
         "SELECT m.position, m.question_id, q.question, q.options_json, q.answer, q.explanation, "
@@ -3138,7 +3138,7 @@ def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_se
         "exam_id": exam_id,
         "book_id": book,
         "exam_type": exam["exam_type"] or bp.get("exam_type", "T3"),
-        "title": bp.get("title", f"{book} Mock Examination"),
+        "title": bp.get("title", f"{book} practice Examination"),
         "score": score,
         "total_marks": total_count,
         "percentage": pct,
@@ -3151,7 +3151,7 @@ def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_se
 
 
 def _list_mock_exams(conn, student_id: str, book_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """List student's past mock exams and results."""
+    """List student's past practice exams and results."""
     where = ["student_id=?"]
     params: list = [student_id]
     if book_id:
@@ -3172,7 +3172,7 @@ def _list_mock_exams(conn, student_id: str, book_id: Optional[str] = None) -> Li
             "id": r["id"],
             "book_id": r["book_id"] or bp.get("book_id"),
             "exam_type": r["exam_type"] or bp.get("exam_type", "T3"),
-            "title": bp.get("title", "Mock Examination"),
+            "title": bp.get("title", "practice Examination"),
             "started_at": r["started_at"],
             "submitted_at": r["submitted_at"],
             "duration_min": r["duration_min"],
@@ -3186,7 +3186,7 @@ def _list_mock_exams(conn, student_id: str, book_id: Optional[str] = None) -> Li
 
 
 # =============================================================================
-# PREREQUISITE & MOCK EXAM API ENDPOINTS
+# PREREQUISITE & practice EXAM API ENDPOINTS
 # =============================================================================
 
 @app.get("/prerequisites/{book_id}")
@@ -3213,7 +3213,7 @@ class MockExamSubmitIn(BaseModel):
 
 @app.post("/mock-exam/create")
 def mock_exam_create_endpoint(body: MockExamCreateIn):
-    """Generate a timed full mock exam for T1, T2, or T3 comprehensive syllabus."""
+    """Generate a timed full practice exam for T1, T2, or T3 comprehensive syllabus."""
     try:
         return run_db(_create_mock_exam, body.student_id, body.book_id, body.exam_type, body.question_count, body.duration_min)
     except ValueError as e:
@@ -3222,7 +3222,7 @@ def mock_exam_create_endpoint(body: MockExamCreateIn):
 
 @app.get("/mock-exam/{exam_id}")
 def mock_exam_get_endpoint(exam_id: int):
-    """Retrieve an active or finished mock exam."""
+    """Retrieve an active or finished practice exam."""
     try:
         return run_db(_get_mock_exam, exam_id)
     except KeyError as e:
@@ -3231,7 +3231,7 @@ def mock_exam_get_endpoint(exam_id: int):
 
 @app.post("/mock-exam/{exam_id}/submit")
 def mock_exam_submit_endpoint(exam_id: int, body: MockExamSubmitIn):
-    """Submit a mock exam, grade results, and diagnose prerequisite gaps."""
+    """Submit a practice exam, grade results, and diagnose prerequisite gaps."""
     try:
         return run_db(_submit_mock_exam, exam_id, body.answers, body.time_spent_sec)
     except KeyError as e:
@@ -3240,7 +3240,7 @@ def mock_exam_submit_endpoint(exam_id: int, body: MockExamSubmitIn):
 
 @app.get("/mock-exam/history/{student_id}")
 def mock_exam_history_endpoint(student_id: str, book_id: Optional[str] = None):
-    """List historical mock exam attempts for a student."""
+    """List historical practice exam attempts for a student."""
     return run_db(_list_mock_exams, student_id, book_id)
 
 

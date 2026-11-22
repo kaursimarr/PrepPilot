@@ -141,8 +141,14 @@ export default function AdaptiveQuiz({ onBackToWorkspace }) {
   }
 
   // Next Question
-  const handleNextQuestion = () => {
+  const handleNextQuestion = async () => {
     if (lastResult?.finished) {
+      if (!summaryData && sessionId) {
+        try {
+          const s = await getAdaptiveSession(sessionId)
+          setSummaryData(s)
+        } catch (_) {}
+      }
       setQuizState('summary')
       return
     }

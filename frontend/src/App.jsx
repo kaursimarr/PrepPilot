@@ -113,7 +113,7 @@ const ROUTE_MAP = {
   'adaptive': 'Adaptive Quiz',
   'flashcards': 'Flashcards',
   'syllabus': 'Syllabus',
-  'prerequisites': 'Syllabus',
+  'prerequisites': 'Prerequisites',
   'mock': 'Practice Mock Exam',
   'progress': 'My Progress',
   'resources': 'Study Resources',
@@ -129,6 +129,7 @@ const PAGE_TO_ROUTE = {
   'Adaptive Quiz': 'adaptive',
   'Flashcards': 'flashcards',
   'Syllabus': 'syllabus',
+  'Prerequisites': 'prerequisites',
   'Practice Mock Exam': 'mock',
   'My Progress': 'progress',
   'Study Resources': 'resources',
@@ -248,7 +249,7 @@ function App() {
     getResourceFigures(null, 8).then(setResourceFigures).catch(() => {})
 
     // Profile
-    getStudentProfile().then(setProfile).catch(() => {})
+    getStudentProfile().then(res => { if (res) setProfile(res) }).catch(() => {})
   }, [])
 
   // AI Assistant Chat State
@@ -294,6 +295,8 @@ function App() {
   const [quizUserAnswers, setQuizUserAnswers] = useState([])
   const [showQuizReview, setShowQuizReview] = useState(false)
   const [quizCount, setQuizCount] = useState(10)
+  const [mockBook, setMockBook] = useState('CLRS')
+  const [mockSlot, setMockSlot] = useState('T1')
 
   // Routing navigation helper that syncs with browser history
   const go = (targetPage, pushState = true) => {
@@ -361,6 +364,7 @@ function App() {
     ['Prepare for an Exam', Target],
     ['Adaptive Quiz', Zap],
     ['Syllabus', GraduationCap],
+    ['Prerequisites', GitFork],
     ['Practice Mock Exam', FileText],
     ['Flashcards', Layers3],
     ['My Progress', ChartNoAxesCombined],
@@ -1450,6 +1454,8 @@ function App() {
                 go('Practice and Try')
               }}
               onNavigateToMock={(b, s) => {
+                if (b) setMockBook(b)
+                if (s) setMockSlot(s)
                 go('Practice Mock Exam')
               }}
             />
@@ -1460,8 +1466,8 @@ function App() {
             <AdaptiveQuiz onBackToWorkspace={() => go('Overview')} />
           )}
 
-          {/* ===================== SYLLABUS & PREREQUISITES ===================== */}
-          {(page === 'Syllabus' || page === 'Prerequisites') && (
+          {/* ===================== SYLLABUS ===================== */}
+          {page === 'Syllabus' && (
             <SyllabusIntelligence
               onBackToWorkspace={() => go('Overview')}
               onNavigateToPractice={(b, ch) => {
@@ -1472,9 +1478,25 @@ function App() {
             />
           )}
 
+          {/* ===================== PREREQUISITE ENGINE ===================== */}
+          {page === 'Prerequisites' && (
+            <PrerequisiteEngine
+              onBackToWorkspace={() => go('Overview')}
+              onNavigateToQuiz={(b, ch) => {
+                setQuizBook(b)
+                setQuizChapter(ch)
+                go('Adaptive Quiz')
+              }}
+            />
+          )}
+
           {/* ===================== PRACTICE MOCK EXAM ===================== */}
           {(page === 'Practice Mock Exam' || page === 'Mock Exams') && (
-            <MockExam onBackToWorkspace={() => go('Overview')} />
+            <MockExam
+              onBackToWorkspace={() => go('Overview')}
+              initialBook={mockBook}
+              initialSlot={mockSlot}
+            />
           )}
 
           {/* ===================== FLASHCARDS ===================== */}

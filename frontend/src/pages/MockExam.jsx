@@ -12,10 +12,15 @@ import {
 
 const BOOKS = ['CLRS', 'DS', 'C', 'CPP']
 
-export default function MockExam({ onBackToWorkspace }) {
+export default function MockExam({ onBackToWorkspace, initialBook = 'CLRS', initialSlot = 'T1' }) {
   // Navigation / Mode state
   const [viewState, setViewState] = useState('launcher') // 'launcher' | 'exam' | 'scorecard'
-  const [book, setBook] = useState('CLRS')
+  const [book, setBook] = useState(initialBook || 'CLRS')
+
+  useEffect(() => {
+    if (initialBook) setBook(initialBook)
+  }, [initialBook])
+
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(false)
   const [starting, setStarting] = useState(false)

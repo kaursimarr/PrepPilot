@@ -1,70 +1,42 @@
 import { useState, useEffect, useCallback } from 'react'
-import { GraduationCap, RotateCcw, ChevronLeft, LoaderCircle, Sparkles, BookOpen } from 'lucide-react'
+import {
+  GraduationCap, ChevronLeft, LoaderCircle, CheckCircle2,
+  AlertTriangle, Clock, Play, Search, BookOpen
+} from 'lucide-react'
 import '../syllabus.css'
 import {
-  getSyllabus,
-  getSyllabusView,
-  assignChapterToExam,
-  resetSyllabusPartition,
+  getPrerequisiteGraph,
   BOOK_TITLES,
 } from '../api'
 
-const BOOKS = ['CLRS', 'DS', 'C', 'CPP']
-
-const TABS = [
-  { key: 'T1',    label: 'T1 — Test 1 (33%)',           cls: 't1' },
-  { key: 'T2',    label: 'T2 — Test 2 (33%)',           cls: 't2' },
-  { key: 'T1+T2', label: 'T1 + T2 Combined (66%)',      cls: 't1t2' },
-  { key: 'T3',    label: 'T3 — End Term (Whole Syllabus)', cls: 't3' },
-  { key: 'ALL',   label: 'All Chapters',                cls: 'all' },
+const BOOK_TABS = [
+  { key: 'CLRS', label: 'Algorithms (CLRS)' },
+  { key: 'DS', label: 'Data Structures' },
+  { key: 'C', label: 'Let Us C' },
+  { key: 'CPP', label: 'C++ Reference' },
 ]
 
-function slotCls(slot) {
-  if (!slot) return 'un'
-  return slot.toLowerCase().replace('+', '')
-}
+const FILTER_TABS = [
+  { key: 'ALL', label: 'All Chapters' },
+  { key: 'T1', label: 'Test 1 (T1) Midterm' },
+  { key: 'T2', label: 'Test 2 (T2) Midterm' },
+  { key: 'T3', label: 'Test 3 (T3) Comprehensive' },
+]
 
-function ChapterCard({ ch, onChangeSlot }) {
-  const cls = slotCls(ch.exam_slot)
-  return (
-    <div className={`chapter-card ${cls}`}>
-      <div className="chapter-card-top">
-        <span className="chapter-num">CH {ch.chapter}</span>
-        <span className="chapter-title">{ch.chapter_title || `Chapter ${ch.chapter}`}</span>
-        <span className={`chapter-badge ${cls}`}>{ch.exam_slot || '—'}</span>
-      </div>
-      <div className="chapter-card-footer">
-        <span className="chapter-chunks">{ch.chunks} chunks</span>
-        <select
-          className="syl-assign-select"
-          value={ch.exam_slot || ''}
-          onChange={e => onChangeSlot(ch.chapter, e.target.value)}
-        >
-          <option value="">Unassigned</option>
-          <option value="T1">T1 (Test 1)</option>
-          <option value="T2">T2 (Test 2)</option>
-          <option value="T3">T3 (Test 3)</option>
-        </select>
-      </div>
-    </div>
-  )
-}
-
-export default function SyllabusIntelligence({ onBackToWorkspace }) {
-  const [book, setBook]           = useState('CLRS')
+export default function SyllabusIntelligence({ onBackToWorkspace, onNavigateToPractice }) {
+  const [book, setBook] = useState('CLRS')
   const [activeTab, setActiveTab] = useState('ALL')
-  const [summary, setSummary]     = useState(null)
-  const [viewData, setViewData]   = useState(null)
-  const [loading, setLoading]     = useState(false)
-  const [resetting, setResetting] = useState(false)
-  const [error, setError]         = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [graphData, setGraphData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
-  const loadSummary = useCallback(async (b) => {
+  const loadData = useCallback(async (b) => {
     setLoading(true)
     setError(null)
     try {
-      const s = await getSyllabus(b)
-      setSummary(s)
+      const g = await getPrerequisiteGraph(b, 'default')
+      setGraphData(g)
     } catch (e) {
       setError(e.message || 'Failed to load syllabus.')
     } finally {
@@ -72,74 +44,23 @@ export default function SyllabusIntelligence({ onBackToWorkspace }) {
     }
   }, [])
 
-  const loadView = useCallback(async (b, tab) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const d = await getSyllabusView(b, tab)
-      setViewData(d)
-    } catch (e) {
-      setError(e.message || 'Failed to load view.')
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
   useEffect(() => {
-    setSummary(null)
-    setViewData(null)
-    loadSummary(book)
-    if (activeTab !== 'ALL') loadView(book, activeTab)
-  }, [book]) // eslint-disable-line
+    loadData(book)
+  }, [book, loadData])
 
-  useEffect(() => {
-    setViewData(null)
-    if (activeTab !== 'ALL') loadView(book, activeTab)
-  }, [activeTab]) // eslint-disable-line
+  const nodes = graphData?.nodes || []
 
-  const handleResetPartition = async () => {
-    setResetting(true)
-    setError(null)
-    try {
-      await resetSyllabusPartition(book)
-      await loadSummary(book)
-      if (activeTab !== 'ALL') await loadView(book, activeTab)
-    } catch (e) {
-      setError(e.message || 'Reset failed.')
-    } finally {
-      setResetting(false)
+  // Filter chapters by search query and slot
+  const filteredNodes = nodes.filter(n => {
+    if (activeTab !== 'ALL' && n.exam_slot !== activeTab) return false
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase()
+      const title = (n.chapter_title || '').toLowerCase()
+      const ch = String(n.chapter)
+      return title.includes(q) || ch === q
     }
-  }
-
-  const handleChangeSlot = async (chapter, newSlot) => {
-    if (!newSlot) return
-    setError(null)
-    try {
-      await assignChapterToExam(book, String(chapter), newSlot)
-      await loadSummary(book)
-      if (activeTab !== 'ALL') await loadView(book, activeTab)
-    } catch (e) {
-      setError(e.message || 'Failed to assign slot.')
-    }
-  }
-
-  /* Filter chapters based on active tab */
-  const displayChapters = (() => {
-    if (activeTab === 'ALL') {
-      return summary
-        ? [
-            ...(summary.T1?.chapters || []),
-            ...(summary.T2?.chapters || []),
-            ...(summary.T3?.new_chapters || summary.T3?.chapters || []),
-            ...(summary.unassigned?.chapters || []),
-          ]
-        : []
-    }
-    return viewData?.chapters || []
-  })()
-
-  const isCombined = activeTab === 'T1+T2'
-  const isT3All = activeTab === 'T3'
+    return true
+  })
 
   return (
     <div className="syl-page">
@@ -155,186 +76,146 @@ export default function SyllabusIntelligence({ onBackToWorkspace }) {
         <div className="syl-title">
           <div className="syl-title-icon"><GraduationCap size={20} /></div>
           <div>
-            Syllabus Intelligence
-            <div className="syl-subtitle">Exam-segmented syllabus: T1 (33.3%) · T2 (33.3%) · T3 (Whole Syllabus)</div>
+            Syllabus &amp; Course Roadmap
+            <div className="syl-subtitle">
+              {BOOK_TITLES[book] || book} — Clean vertical directory of chapters, prerequisites, and exam tiers.
+            </div>
           </div>
         </div>
 
-        <div className="syl-header-right">
-          {/* Book selector */}
-          <div className="syl-book-select">
-            {BOOKS.map(b => (
-              <button
-                key={b}
-                className={`syl-book-btn${book === b ? ' active' : ''}`}
-                onClick={() => setBook(b)}
-              >
-                {b}
-              </button>
-            ))}
-          </div>
-
-          {/* Reset button */}
-          <button
-            className="syl-reset-btn"
-            onClick={handleResetPartition}
-            disabled={resetting}
-            title="Reset to 33.33% equal division"
-          >
-            {resetting ? <LoaderCircle size={13} className="syl-spin" /> : <RotateCcw size={13} />}
-            Reset 33%
-          </button>
+        {/* Book selector */}
+        <div className="syl-book-select">
+          {BOOK_TABS.map(b => (
+            <button
+              key={b.key}
+              className={`syl-book-btn ${book === b.key ? 'active' : ''}`}
+              onClick={() => {
+                setBook(b.key)
+                setSearchQuery('')
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Division Overview Cards */}
-      {summary && (
-        <div className="syl-division-banner">
-          <div className="syl-division-card t1">
-            <div className="syl-div-header">
-              <span className="syl-div-name">Test 1 (T1)</span>
-              <span className="syl-div-pct">33.3%</span>
-            </div>
-            <div className="syl-div-count">{summary.T1?.count ?? 0} chapters</div>
-            <div className="syl-div-desc">Initial foundation syllabus tested in Exam 1</div>
-          </div>
-
-          <div className="syl-division-card t2">
-            <div className="syl-div-header">
-              <span className="syl-div-name">Test 2 (T2)</span>
-              <span className="syl-div-pct">33.3%</span>
-            </div>
-            <div className="syl-div-count">{summary.T2?.count ?? 0} chapters</div>
-            <div className="syl-div-desc">Core intermediate concepts tested in Exam 2</div>
-          </div>
-
-          <div className="syl-division-card t1t2">
-            <div className="syl-div-header">
-              <span className="syl-div-name">T1 + T2 Combined</span>
-              <span className="syl-div-pct">66.7%</span>
-            </div>
-            <div className="syl-div-count">{summary.T1_plus_T2?.count ?? 0} chapters</div>
-            <div className="syl-div-desc">Cumulative syllabus through mid-term scope</div>
-          </div>
-
-          <div className="syl-division-card t3">
-            <div className="syl-div-header">
-              <span className="syl-div-name">Test 3 / End Term (T3)</span>
-              <span className="syl-div-pct">100% Full</span>
-            </div>
-            <div className="syl-div-count">{summary.total_chapters ?? 0} chapters</div>
-            <div className="syl-div-desc">Comprehensive exam: T1 + T2 + Remaining chapters</div>
-          </div>
-        </div>
-      )}
-
-      {/* Error banner */}
-      {error && <div className="syl-error">⚠ {error}</div>}
-
-      {/* Exam Tabs */}
-      <div className="exam-tab-row">
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            className={`exam-tab${activeTab === t.key ? ` active ${t.cls}` : ''}`}
-            onClick={() => setActiveTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
+      {/* Quick Summary Strip */}
+      <div className="syl-summary-strip">
+        <span className="syl-stat-item"><b>{nodes.length}</b> Chapters</span>
+        <span className="syl-stat-dot">·</span>
+        <span className="syl-stat-item"><b>{nodes.filter(n => n.exam_slot === 'T1').length}</b> in T1 Midterm</span>
+        <span className="syl-stat-dot">·</span>
+        <span className="syl-stat-item"><b>{nodes.filter(n => n.exam_slot === 'T2').length}</b> in T2 Midterm</span>
+        <span className="syl-stat-dot">·</span>
+        <span className="syl-stat-item"><b>{nodes.filter(n => n.exam_slot === 'T3').length}</b> in T3 Comprehensive</span>
+        <span className="syl-stat-dot">·</span>
+        <span className="syl-stat-item text-success"><b>{nodes.filter(n => n.status === 'completed').length}</b> Mastered</span>
       </div>
 
-      {/* T3 notice */}
-      {isT3All && (
-        <div className="syl-scope-notice">
-          <BookOpen size={16} />
-          <span><b>T3 Comprehensive Scope:</b> Includes all chapters across the entire course syllabus (T1 Foundations + T2 Intermediate + T3 Remaining).</span>
+      {/* Controls Bar: Search & Exam Slot Filter */}
+      <div className="syl-controls-bar">
+        <div className="syl-search-box">
+          <Search size={14} className="syl-search-icon" />
+          <input
+            type="text"
+            placeholder="Search chapters by title or chapter number..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+          />
         </div>
-      )}
 
-      {/* Chapter Grid */}
+        <div className="syl-slot-pills">
+          {FILTER_TABS.map(tab => (
+            <button
+              key={tab.key}
+              className={`syl-slot-pill ${activeTab === tab.key ? 'active' : ''}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {loading ? (
-        <div className="syl-loading">
-          <LoaderCircle size={20} className="syl-spin" /> Loading syllabus chapters…
+        <div className="syl-loading-panel">
+          <LoaderCircle size={24} className="spin" />
+          <span>Loading syllabus chapters...</span>
         </div>
+      ) : error ? (
+        <div className="syl-error-panel">⚠ {error}</div>
       ) : (
-        <div className="syl-grid">
-          {displayChapters.length === 0 && (
-            <div className="syl-empty">
-              No chapters found for this selection.
-            </div>
-          )}
+        /* Vertical Chapter Cards List */
+        <div className="syl-vertical-container">
+          <div className="syl-vertical-list">
+            {filteredNodes.length === 0 ? (
+              <div className="syl-empty-note">No chapters match your search filter.</div>
+            ) : (
+              filteredNodes.map(ch => {
+                const isCompleted = ch.status === 'completed'
+                const isWeak = ch.status === 'weak'
+                const prereqs = ch.prerequisites || []
+                const unlocks = ch.unlocks || []
 
-          {/* Grouped view for T3 (Whole syllabus) */}
-          {isT3All ? (
-            <>
-              {(summary?.T1?.chapters || []).length > 0 && (
-                <>
-                  <div className="syl-section-label t1">
-                    <span>▸ T1 Foundation Scope (33.3%)</span>
-                    <span>{summary.T1.count} chapters</span>
-                  </div>
-                  {(summary?.T1?.chapters || []).map(ch => (
-                    <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-                  ))}
-                </>
-              )}
+                return (
+                  <div key={ch.chapter} className="syl-chapter-vertical-row">
+                    {/* Left: Index badge */}
+                    <div className="syl-ch-index-badge">
+                      {String(ch.chapter).padStart(2, '0')}
+                    </div>
 
-              {(summary?.T2?.chapters || []).length > 0 && (
-                <>
-                  <div className="syl-section-label t2">
-                    <span>▸ T2 Intermediate Scope (33.3%)</span>
-                    <span>{summary.T2.count} chapters</span>
-                  </div>
-                  {(summary?.T2?.chapters || []).map(ch => (
-                    <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-                  ))}
-                </>
-              )}
+                    {/* Middle: Chapter info, prerequisites and unlocks */}
+                    <div className="syl-row-left">
+                      <div className="syl-ch-header">
+                        <span className="syl-ch-number">
+                          Chapter {ch.chapter}
+                        </span>
+                        <span className={`syl-ch-slot-badge ${ch.exam_slot?.toLowerCase() || 't1'}`}>
+                          {ch.exam_slot === 'T1' ? 'T1 Midterm' : ch.exam_slot === 'T2' ? 'T2 Midterm' : 'T3 Final'}
+                        </span>
+                        {prereqs.length > 0 ? (
+                          <span className="syl-prereq-badge">
+                            Requires Ch. {prereqs.map(p => p.chapter).join(', ')}
+                          </span>
+                        ) : (
+                          <span className="syl-prereq-badge foundational">
+                            Foundational Topic
+                          </span>
+                        )}
+                        {unlocks.length > 0 && (
+                          <span className="syl-unlock-badge">
+                            Unlocks Ch. {unlocks.map(u => u.chapter).slice(0, 3).join(', ')}
+                          </span>
+                        )}
+                      </div>
+                      <h3 className="syl-ch-title">{ch.chapter_title || `Chapter ${ch.chapter}`}</h3>
+                    </div>
 
-              {((summary?.T3?.new_chapters || []).length > 0) && (
-                <>
-                  <div className="syl-section-label t3">
-                    <span>▸ T3 Advanced / Remaining Scope (33.4%)</span>
-                    <span>{summary.T3.new_count || summary.T3.new_chapters.length} chapters</span>
+                    {/* Right: Status badge & Action */}
+                    <div className="syl-row-right">
+                      <div className="syl-status-badge">
+                        {isCompleted ? (
+                          <span className="badge-done"><CheckCircle2 size={13} /> Mastered</span>
+                        ) : isWeak ? (
+                          <span className="badge-weak"><AlertTriangle size={13} /> Needs Review</span>
+                        ) : (
+                          <span className="badge-pending"><Clock size={13} /> Unattempted</span>
+                        )}
+                      </div>
+
+                      <button
+                        className="syl-row-practice-btn"
+                        onClick={() => onNavigateToPractice && onNavigateToPractice(book, ch.chapter)}
+                      >
+                        <Play size={13} /> Practice
+                      </button>
+                    </div>
                   </div>
-                  {(summary?.T3?.new_chapters || []).map(ch => (
-                    <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-                  ))}
-                </>
-              )}
-            </>
-          ) : isCombined ? (
-            /* T1+T2 combined view */
-            <>
-              {(summary?.T1?.chapters || []).length > 0 && (
-                <>
-                  <div className="syl-section-label t1">
-                    <span>▸ T1 Scope</span>
-                    <span>{summary.T1.count} chapters</span>
-                  </div>
-                  {(summary?.T1?.chapters || []).map(ch => (
-                    <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-                  ))}
-                </>
-              )}
-              {(summary?.T2?.chapters || []).length > 0 && (
-                <>
-                  <div className="syl-section-label t2">
-                    <span>▸ T2 Scope</span>
-                    <span>{summary.T2.count} chapters</span>
-                  </div>
-                  {(summary?.T2?.chapters || []).map(ch => (
-                    <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-                  ))}
-                </>
-              )}
-            </>
-          ) : (
-            displayChapters.map(ch => (
-              <ChapterCard key={ch.chapter} ch={ch} onChangeSlot={handleChangeSlot} />
-            ))
-          )}
+                )
+              })
+            )}
+          </div>
         </div>
       )}
     </div>

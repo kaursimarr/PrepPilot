@@ -1,0 +1,456 @@
+/* ============================================================
+   Prepare for an Exam — Theme-Consistent Styling
+   ============================================================ */
+
+.prep-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: prep-fadein 0.2s ease;
+}
+
+@keyframes prep-fadein {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.prep-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.prep-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.prep-icon-box {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--brand-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  box-shadow: 0 3px 12px var(--primary-glow);
+}
+
+.prep-title {
+  font-family: 'Manrope', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--text-main);
+  letter-spacing: -0.3px;
+  margin: 0;
+}
+
+.prep-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.prep-book-selector {
+  display: flex;
+  background: var(--pill-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 4px;
+}
+
+.prep-book-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'DM Sans', sans-serif;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prep-book-btn:hover {
+  color: var(--text-main);
+}
+
+.prep-book-btn.active {
+  background: var(--card-bg);
+  color: var(--text-main);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+/* Exam Slot Selector Tabs */
+.prep-slot-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.prep-slot-tab {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prep-slot-tab:hover {
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.prep-slot-tab.active {
+  border-color: var(--primary);
+  background: var(--card-hover);
+  box-shadow: 0 0 0 1px var(--primary), 0 4px 14px var(--primary-glow);
+}
+
+.slot-tab-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.slot-tab-title {
+  font-family: 'Manrope', sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.slot-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+
+.slot-badge.t1 { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.slot-badge.t2 { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.slot-badge.t3 { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
+
+.slot-tab-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Summary Grid */
+.prep-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 14px;
+}
+
+@media (max-width: 768px) {
+  .prep-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.prep-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.card-top-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.readiness-score-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.score-number {
+  font-family: 'Manrope', sans-serif;
+  font-size: 2.2rem;
+  font-weight: 800;
+  color: var(--primary);
+  line-height: 1;
+}
+
+.score-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.score-tier {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.score-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.prep-prog-track {
+  width: 100%;
+  height: 8px;
+  background: var(--pill-bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.prep-prog-fill {
+  height: 100%;
+  background: var(--brand-gradient);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.leftness-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.leftness-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.leftness-item b {
+  display: block;
+  color: var(--text-main);
+}
+
+.leftness-item span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.text-dim { color: var(--text-dim); }
+.text-amber { color: #f59e0b; }
+.text-green { color: #10b981; }
+
+/* Chapters Checklist Panel */
+.prep-chapters-panel {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chapters-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-bottom: 1px solid var(--card-border);
+  padding-bottom: 12px;
+}
+
+.panel-heading {
+  font-family: 'Manrope', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.panel-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+}
+
+.prep-mock-btn {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 6px;
+}
+
+.prep-chapters-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prep-chapter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--pill-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  transition: all 0.15s ease;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.prep-chapter-row:hover {
+  background: var(--card-hover);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.prep-ch-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-pill.done {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.status-pill.weak {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.status-pill.left {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-dim);
+}
+
+.prep-ch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ch-num-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ch-num {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--primary);
+}
+
+.ch-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.ch-slot-badge {
+  font-size: 9px;
+  font-weight: 800;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-dim);
+}
+
+.ch-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ch-prereq-note {
+  color: #c084fc;
+}
+
+.prep-ch-action {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.leftness-status-text {
+  font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.prep-practice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 7px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prep-practice-btn:hover {
+  background: var(--primary);
+  color: #0b0f19;
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.prep-loading-box, .prep-error-box {
+  padding: 40px;
+  text-align: center;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.prep-error-box {
+  color: #ff9ea9;
+  border-color: #632a36;
+  background: #351b22;
+}

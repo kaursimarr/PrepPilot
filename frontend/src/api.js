@@ -63,12 +63,13 @@ export async function getChapters(bookId) {
   return request(`/books/${encodeURIComponent(bookId)}/chapters`)
 }
 
-export async function getQuestions(bookId = null, chapter = null, qtype = null, limit = 20) {
+export async function getQuestions(bookId = null, chapter = null, qtype = null, limit = 20, studentId = 'default') {
   const params = new URLSearchParams()
   if (bookId) params.append('book_id', bookId)
   if (chapter) params.append('chapter', chapter)
   if (qtype) params.append('qtype', qtype)
   params.append('limit', String(limit))
+  if (studentId) params.append('student_id', studentId)
   return request(`/questions?${params.toString()}`)
 }
 

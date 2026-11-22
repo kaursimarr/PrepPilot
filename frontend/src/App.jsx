@@ -3,6 +3,7 @@ import Flashcards from './pages/Flashcards'
 import AdaptiveQuiz from './pages/AdaptiveQuiz'
 import SyllabusIntelligence from './pages/SyllabusIntelligence'
 import PrerequisiteEngine from './pages/PrerequisiteEngine'
+import PrepareForExam from './pages/PrepareForExam'
 import MockExam from './pages/MockExam'
 import {
   LayoutDashboard, BookOpen, Bot, ClipboardList, ChartNoAxesCombined, Library,
@@ -12,6 +13,7 @@ import {
   GitFork, FileText, Sun, Moon
 } from 'lucide-react'
 import './workspace.css'
+import './practice.css'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid } from 'recharts'
 import {
   getHealth, askQuestion, getChapters, getQuestions, generateQuestions,
@@ -106,12 +108,13 @@ const ROUTE_MAP = {
   'overview': 'Overview',
   'subjects': 'My Subjects',
   'assistant': 'AI Study Assistant',
-  'practice': 'Practice & Quizzes',
+  'practice': 'Practice and Try',
+  'prepare': 'Prepare for an Exam',
   'adaptive': 'Adaptive Quiz',
   'flashcards': 'Flashcards',
   'syllabus': 'Syllabus',
-  'prerequisites': 'Prerequisites',
-  'mock': 'Mock Exams',
+  'prerequisites': 'Syllabus',
+  'mock': 'Practice Mock Exam',
   'progress': 'My Progress',
   'resources': 'Study Resources',
   'settings': 'Settings',
@@ -121,12 +124,12 @@ const PAGE_TO_ROUTE = {
   'Overview': 'workspace',
   'My Subjects': 'subjects',
   'AI Study Assistant': 'assistant',
-  'Practice & Quizzes': 'practice',
+  'Practice and Try': 'practice',
+  'Prepare for an Exam': 'prepare',
   'Adaptive Quiz': 'adaptive',
   'Flashcards': 'flashcards',
   'Syllabus': 'syllabus',
-  'Prerequisites': 'prerequisites',
-  'Mock Exams': 'mock',
+  'Practice Mock Exam': 'mock',
   'My Progress': 'progress',
   'Study Resources': 'resources',
   'Settings': 'settings',
@@ -272,7 +275,7 @@ function App() {
     }
   }, [selectedBook])
 
-  // Practice & Quizzes State
+  // Practice and Try State
   const [quizBook, setQuizBook] = useState('CLRS')
   const [quizChapter, setQuizChapter] = useState('')
   const [quizChaptersList, setQuizChaptersList] = useState([])
@@ -288,12 +291,15 @@ function App() {
   const [quizCompleted, setQuizCompleted] = useState(false)
   const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false)
   const [quizGenMsg, setQuizGenMsg] = useState('')
+  const [quizUserAnswers, setQuizUserAnswers] = useState([])
+  const [showQuizReview, setShowQuizReview] = useState(false)
+  const [quizCount, setQuizCount] = useState(10)
 
   // Routing navigation helper that syncs with browser history
   const go = (targetPage, pushState = true) => {
     setPage(targetPage)
     setMobile(false)
-    if (targetPage !== 'Practice & Quizzes') {
+    if (targetPage !== 'Practice and Try') {
       setQuizStarted(false)
       setQuizCompleted(false)
     }
@@ -315,7 +321,7 @@ function App() {
       setPage(target)
       if (raw.includes('quiz')) {
         setQuizStarted(true)
-      } else if (target !== 'Practice & Quizzes') {
+      } else if (target !== 'Practice and Try') {
         setQuizStarted(false)
       }
     }
@@ -351,11 +357,11 @@ function App() {
     ['Overview', LayoutDashboard],
     ['My Subjects', BookOpen],
     ['AI Study Assistant', Bot],
-    ['Practice & Quizzes', ClipboardList],
+    ['Practice and Try', ClipboardList],
+    ['Prepare for an Exam', Target],
     ['Adaptive Quiz', Zap],
     ['Syllabus', GraduationCap],
-    ['Prerequisites', GitFork],
-    ['Mock Exams', FileText],
+    ['Practice Mock Exam', FileText],
     ['Flashcards', Layers3],
     ['My Progress', ChartNoAxesCombined],
     ['Study Resources', Library]
@@ -403,9 +409,11 @@ function App() {
     setQuizChoice('')
     setQuizSubmitted(false)
     setQuizScore(0)
+    setQuizUserAnswers([])
+    setShowQuizReview(false)
     setQuizCompleted(false)
     setQuizStarted(true)
-    window.history.pushState({ page: 'Practice & Quizzes', sub: 'quiz' }, '', '#/practice/quiz')
+    window.history.pushState({ page: 'Practice and Try', sub: 'quiz' }, '', '#/practice/quiz')
   }
 
   // Exit quiz session back to practice menu
@@ -414,15 +422,18 @@ function App() {
     setQuizCompleted(false)
     setQuizChoice('')
     setQuizSubmitted(false)
-    window.history.pushState({ page: 'Practice & Quizzes' }, '', '#/practice')
+    setQuizUserAnswers([])
+    setShowQuizReview(false)
+    window.history.pushState({ page: 'Practice and Try' }, '', '#/practice')
   }
 
   // Load questions from backend question bank
   const loadChapterQuestions = async () => {
     setIsGeneratingQuiz(true)
     setQuizGenMsg('Loading questions from question bank...')
+    const student = profile?.username || 'default'
     try {
-      const qs = await getQuestions(quizBook, quizChapter || null, 'mcq', 10)
+      const qs = await getQuestions(quizBook, quizChapter || null, 'mcq', quizCount || 10, student)
       if (qs && qs.length > 0) {
         startQuizSession(qs)
         setQuizGenMsg(`Loaded ${qs.length} verified questions for this chapter!`)
@@ -431,8 +442,15 @@ function App() {
         await triggerGenerateQuestions()
       }
     } catch (err) {
-      setQuizGenMsg(`Using starter question set (${err.message})`)
-      startQuizSession(defaultQuizQuestions)
+      try {
+        const bookQs = await getQuestions(quizBook, null, 'mcq', quizCount || 10, student)
+        if (bookQs && bookQs.length > 0) {
+          startQuizSession(bookQs)
+          setQuizGenMsg(`Loaded ${bookQs.length} verified questions for ${quizBook}.`)
+          return
+        }
+      } catch (_) {}
+      setQuizGenMsg(`Error loading questions: ${err.message}`)
     } finally {
       setIsGeneratingQuiz(false)
     }
@@ -442,19 +460,32 @@ function App() {
   const triggerGenerateQuestions = async () => {
     setIsGeneratingQuiz(true)
     setQuizGenMsg('Generating AI exam questions from textbook passages...')
+    const student = profile?.username || 'default'
     try {
       const res = await generateQuestions(quizBook, quizChapter, 'mcq', 4, 'medium')
-      const qs = await getQuestions(quizBook, quizChapter, 'mcq', 10)
+      const qs = await getQuestions(quizBook, quizChapter, 'mcq', quizCount || 10, student)
       if (qs && qs.length > 0) {
         startQuizSession(qs)
         setQuizGenMsg(`Generated and verified ${qs.length} questions!`)
       } else {
-        setQuizGenMsg(res?.message || 'Generated questions. Starting quiz set.')
-        startQuizSession(defaultQuizQuestions)
+        const bookQs = await getQuestions(quizBook, null, 'mcq', quizCount || 10, student)
+        if (bookQs && bookQs.length > 0) {
+          startQuizSession(bookQs)
+          setQuizGenMsg(`Loaded ${bookQs.length} verified questions for ${quizBook}!`)
+        } else {
+          setQuizGenMsg(res?.message || 'No verified questions currently available for this section.')
+        }
       }
     } catch (err) {
-      setQuizGenMsg(`Note: AI generator offline (${err.message}). Loaded standard practice set.`)
-      startQuizSession(defaultQuizQuestions)
+      try {
+        const bookQs = await getQuestions(quizBook, null, 'mcq', quizCount || 10, student)
+        if (bookQs && bookQs.length > 0) {
+          startQuizSession(bookQs)
+          setQuizGenMsg(`Loaded ${bookQs.length} verified questions for ${quizBook}.`)
+          return
+        }
+      } catch (_) {}
+      setQuizGenMsg(`AI generation unavailable (${err.message}). Showing verified textbook questions.`)
     } finally {
       setIsGeneratingQuiz(false)
     }
@@ -474,6 +505,22 @@ function App() {
       setQuizScore(s => s + 1)
     }
     setQuizSubmitted(true)
+
+    // Store user answer for question-by-question review mode
+    setQuizUserAnswers(prev => [
+      ...prev,
+      {
+        question: currentQuizQ.question,
+        options: currentQuizQ.options || [],
+        userChoice: quizChoice,
+        correctAnswer: currentQuizQ.answer || currentQuizQ.answer_text || 'A',
+        explanation: currentQuizQ.explanation,
+        chapter_title: currentQuizQ.chapter_title,
+        chapter: currentQuizQ.chapter,
+        book_id: currentQuizQ.book_id || quizBook,
+        isCorrect
+      }
+    ])
 
     // Log attempt to backend to dynamically update topic mastery
     recordQuizAttempt({
@@ -642,10 +689,10 @@ function App() {
             {page !== 'Overview' && (
               <>
                 <span>/</span>
-                {page === 'Practice & Quizzes' && quizStarted ? (
+                {page === 'Practice and Try' && quizStarted ? (
                   <>
                     <button className="crumb-btn" onClick={exitQuiz} title="Back to Chapter List">
-                      Practice &amp; Quizzes
+                      Practice and Try
                     </button>
                     <span>/</span>
                     <b>Active Quiz ({currentQuizQ?.book_id || quizBook} Ch. {currentQuizQ?.chapter || quizChapter})</b>
@@ -827,8 +874,8 @@ function App() {
                       </div>
                     ))}
                   </div>
-                  <button className="wide-btn" style={{ marginTop: '16px' }} onClick={() => go('Prerequisites')}>
-                    Review Topic Mastery
+                  <button className="wide-btn" style={{ marginTop: '16px' }} onClick={() => go('Syllabus')}>
+                    Review Syllabus &amp; Prerequisites
                   </button>
                 </div>
               </div>
@@ -904,7 +951,7 @@ function App() {
                             onClick={() => {
                               setQuizBook(selectedSubjectDetail.code)
                               setQuizChapter(ch.chapter)
-                              go('Practice & Quizzes')
+                              go('Practice and Try')
                             }}
                           >
                             Quiz <ArrowUpRight size={12} />
@@ -1057,15 +1104,15 @@ function App() {
             </>
           )}
 
-          {/* ===================== PRACTICE & QUIZZES ===================== */}
-          {page === 'Practice & Quizzes' && (
+          {/* ===================== PRACTICE AND TRY ===================== */}
+          {page === 'Practice and Try' && (
             <>
-              {/* Back navigation buttons for Practice & Quizzes */}
+              {/* Back navigation buttons for Practice and Try */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
                 {quizStarted ? (
                   <>
                     <button className="back-nav-btn" onClick={exitQuiz}>
-                      <ChevronLeft size={15} /> Exit Quiz &amp; Return to Chapter List
+                      <ChevronLeft size={15} /> Exit Quiz &amp; Return to Practice Menu
                     </button>
                     <button className="back-nav-btn" onClick={() => go('Overview')}>
                       <LayoutDashboard size={14} /> Back to Workspace
@@ -1078,214 +1125,334 @@ function App() {
                 )}
               </div>
 
-              <PageTitle title="Practice & Quizzes" desc="Interactive question bank verified against textbook excerpts." />
-              <div className="quiz-layout">
-                <div className="panel quiz-panel">
-                  {quizCompleted ? (
-                    <div className="quiz-summary-card">
-                      <div className="quiz-score-circle">
-                        {Math.round((quizScore / quizQuestions.length) * 100)}%
+              <PageTitle title="Practice and Try" desc="Interactive question sets verified against textbook excerpts with instant feedback." />
+              <div className="practice-hub-card">
+                {quizCompleted ? (
+                  <div className="quiz-result-container">
+                    <div className="quiz-score-badge">
+                      {Math.round((quizScore / quizQuestions.length) * 100)}%
+                    </div>
+                    <h2 className="quiz-result-title">Practice Set Complete!</h2>
+                    <p className="quiz-result-sub">
+                      You answered <b>{quizScore}</b> out of <b>{quizQuestions.length}</b> questions correctly.
+                      Your topic mastery has been updated in the database.
+                    </p>
+
+                    <div className="quiz-metrics-strip">
+                      <div className="quiz-metric-box">
+                        <span className="metric-val" style={{ color: '#10b981' }}>{quizScore}</span>
+                        <span className="metric-lbl">Correct</span>
                       </div>
-                      <h2>Quiz Complete!</h2>
-                      <p style={{ margin: '8px 0 20px' }}>
-                        You answered <b>{quizScore}</b> out of <b>{quizQuestions.length}</b> questions correctly.
-                        Your topic mastery score was updated in the database.
-                      </p>
-                      
-                      <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginTop: '16px', flexWrap: 'wrap' }}>
-                        <button
-                          className="primary-btn"
-                          onClick={() => {
-                            setQuizIndex(0)
-                            setQuizSubmitted(false)
-                            setQuizChoice('')
-                            setQuizScore(0)
-                            setQuizCompleted(false)
-                            setQuizStarted(true)
-                          }}
-                        >
-                          <RefreshCw size={15} /> Retake Quiz
-                        </button>
-                        <button className="back-nav-btn" onClick={exitQuiz}>
-                          <ClipboardList size={15} /> Practice Another Topic
-                        </button>
-                        <button className="back-nav-btn" onClick={() => go('Overview')}>
-                          <LayoutDashboard size={15} /> Back to Workspace
-                        </button>
+                      <div className="quiz-metric-box">
+                        <span className="metric-val" style={{ color: '#ef4444' }}>{quizQuestions.length - quizScore}</span>
+                        <span className="metric-lbl">Incorrect</span>
+                      </div>
+                      <div className="quiz-metric-box">
+                        <span className="metric-val" style={{ color: 'var(--primary)' }}>
+                          {Math.round((quizScore / quizQuestions.length) * 100)}%
+                        </span>
+                        <span className="metric-lbl">Accuracy</span>
                       </div>
                     </div>
-                  ) : quizStarted && currentQuizQ ? (
-                    <>
-                      <div className="quiz-topline">
-                        <span className="subject-tag">
-                          {currentQuizQ.book_id || quizBook} · CH. {currentQuizQ.chapter || 'TOPIC'}
+
+                    <div className="quiz-result-actions">
+                      <button
+                        className="practice-start-btn"
+                        style={{ minWidth: '180px' }}
+                        onClick={() => setShowQuizReview(!showQuizReview)}
+                      >
+                        <BookOpen size={15} /> {showQuizReview ? 'Hide Question Review' : 'Review Answers & Explanations'}
+                      </button>
+                      <button
+                        className="back-nav-btn"
+                        onClick={() => {
+                          setQuizIndex(0)
+                          setQuizSubmitted(false)
+                          setQuizChoice('')
+                          setQuizScore(0)
+                          setQuizUserAnswers([])
+                          setShowQuizReview(false)
+                          setQuizCompleted(false)
+                          setQuizStarted(true)
+                        }}
+                      >
+                        <RefreshCw size={14} /> Retake Quiz
+                      </button>
+                      <button className="back-nav-btn" onClick={exitQuiz}>
+                        <ClipboardList size={14} /> Practice Another Topic
+                      </button>
+                      <button className="back-nav-btn" onClick={() => go('Overview')}>
+                        <LayoutDashboard size={14} /> Back to Workspace
+                      </button>
+                    </div>
+
+                    {showQuizReview && (
+                      <div className="quiz-review-panel">
+                        <h3 style={{ margin: '0 0 10px', fontSize: '15px', fontWeight: 800, color: 'var(--text-main)' }}>
+                          Question-by-Question Review ({quizUserAnswers.length})
+                        </h3>
+                        {quizUserAnswers.map((item, idx) => (
+                          <div key={idx} className="review-card">
+                            <div className="review-card-top">
+                              <span className="review-q-num">Question {idx + 1}</span>
+                              <span className={`review-badge ${item.isCorrect ? 'correct' : 'wrong'}`}>
+                                {item.isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                              </span>
+                            </div>
+                            <p className="review-q-text">{item.question}</p>
+                            <div className="review-ans-row">
+                              <div>
+                                <span style={{ color: 'var(--text-dim)', fontSize: '11px', display: 'block' }}>Your Answer:</span>
+                                <b style={{ color: item.isCorrect ? '#10b981' : '#ef4444' }}>
+                                  ({item.userChoice}) {item.options?.[item.userChoice?.charCodeAt(0) - 65] || item.userChoice}
+                                </b>
+                              </div>
+                              {!item.isCorrect && (
+                                <div>
+                                  <span style={{ color: 'var(--text-dim)', fontSize: '11px', display: 'block' }}>Correct Answer:</span>
+                                  <b style={{ color: '#10b981' }}>
+                                    ({item.correctAnswer}) {item.options?.[item.correctAnswer?.charCodeAt(0) - 65] || item.correctAnswer}
+                                  </b>
+                                </div>
+                              )}
+                            </div>
+                            {item.explanation && (
+                              <p className="review-exp">
+                                <b>Textbook Explanation: </b>{item.explanation}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : quizStarted && currentQuizQ ? (
+                  <>
+                    <div className="quiz-runner-header">
+                      <div className="quiz-runner-topline">
+                        <span className="quiz-book-tag">
+                          {BOOK_TITLES[currentQuizQ.book_id || quizBook] || currentQuizQ.book_id || quizBook} · CH. {currentQuizQ.chapter || 'TOPIC'}
                         </span>
-                        <span className="time-chip">
+                        <span className="quiz-step-indicator">
                           Question {quizIndex + 1} of {quizQuestions.length}
                         </span>
                       </div>
 
-                      <h2>{currentQuizQ.question}</h2>
-
-                      <div className="options">
-                        {(currentQuizQ.options || []).map((opt, oIdx) => {
-                          const letter = 'ABCD'[oIdx]
-                          const isChosen = quizChoice === letter || quizChoice === opt
-                          let btnClass = isChosen ? 'chosen' : ''
-                          if (quizSubmitted) {
-                            const isCorrectOpt = letter === currentQuizQ.answer || opt === currentQuizQ.answer_text
-                            if (isCorrectOpt) btnClass = 'option-correct'
-                            else if (isChosen) btnClass = 'option-wrong'
-                          }
-
-                          return (
-                            <button
-                              key={oIdx}
-                              className={btnClass}
-                              disabled={quizSubmitted}
-                              onClick={() => setQuizChoice(letter)}
-                            >
-                              <b style={{ marginRight: '8px', color: '#9ab4ff' }}>{letter}.</b>
-                              {opt}
-                            </button>
-                          )
-                        })}
+                      {/* Animated Progress Bar */}
+                      <div className="quiz-prog-track">
+                        <div
+                          className="quiz-prog-fill"
+                          style={{ width: `${((quizIndex + 1) / quizQuestions.length) * 100}%` }}
+                        />
                       </div>
 
-                      {quizSubmitted && (
-                        <div className={`quiz-feedback-box ${(quizChoice === currentQuizQ.answer || quizChoice === currentQuizQ.answer_text) ? 'correct' : 'wrong'}`}>
-                          <b>
-                            {(quizChoice === currentQuizQ.answer || quizChoice === currentQuizQ.answer_text)
-                              ? '✓ Correct!'
-                              : `✗ Incorrect. Correct answer is (${currentQuizQ.answer || 'A'}) ${currentQuizQ.answer_text || ''}`}
-                          </b>
-                          <p style={{ margin: '6px 0 0' }}>{currentQuizQ.explanation}</p>
-                          {currentQuizQ.chapter_title && (
-                            <small style={{ display: 'block', marginTop: '6px', opacity: 0.85 }}>
-                              Source: {BOOK_TITLES[currentQuizQ.book_id] || currentQuizQ.book_id} &gt; {currentQuizQ.chapter_title}
-                            </small>
-                          )}
-                        </div>
-                      )}
+                      {/* Question Stepper Dots */}
+                      <div className="quiz-dots-row">
+                        {quizQuestions.map((_, dIdx) => (
+                          <div
+                            key={dIdx}
+                            className={`quiz-dot ${dIdx === quizIndex ? 'active' : dIdx < quizIndex ? 'answered' : ''}`}
+                          >
+                            {dIdx + 1}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
 
-                      <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                        {!quizSubmitted ? (
+                    <h2 className="quiz-q-prompt">{currentQuizQ.question}</h2>
+
+                    <div className="quiz-options-list">
+                      {(currentQuizQ.options || []).map((opt, oIdx) => {
+                        const letter = 'ABCD'[oIdx]
+                        const isChosen = quizChoice === letter || quizChoice === opt
+                        let cardClass = 'quiz-opt-card'
+                        if (isChosen) cardClass += ' selected'
+                        if (quizSubmitted) {
+                          const isCorrectOpt = letter === currentQuizQ.answer || opt === currentQuizQ.answer_text
+                          if (isCorrectOpt) cardClass += ' correct'
+                          else if (isChosen) cardClass += ' incorrect'
+                        }
+
+                        return (
                           <button
-                            className="primary-btn full"
-                            disabled={!quizChoice}
-                            onClick={handleQuizSubmit}
+                            key={oIdx}
+                            type="button"
+                            className={cardClass}
+                            disabled={quizSubmitted}
+                            onClick={() => setQuizChoice(letter)}
                           >
-                            Submit Answer
+                            <span className="opt-letter">{letter}</span>
+                            <span className="opt-text">{opt}</span>
+                            {quizSubmitted && (letter === currentQuizQ.answer || opt === currentQuizQ.answer_text) && (
+                              <CheckCircle2 size={16} color="#10b981" style={{ marginLeft: 'auto' }} />
+                            )}
                           </button>
-                        ) : (
-                          <button
-                            className="primary-btn full"
-                            onClick={handleQuizNext}
-                          >
-                            {quizIndex + 1 < quizQuestions.length ? 'Next Question →' : 'Finish Quiz & View Results'}
-                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {quizSubmitted && (
+                      <div className={`quiz-explanation-box ${(quizChoice === currentQuizQ.answer || quizChoice === currentQuizQ.answer_text) ? 'correct' : 'wrong'}`}>
+                        <div className="exp-header">
+                          {(quizChoice === currentQuizQ.answer || quizChoice === currentQuizQ.answer_text)
+                            ? '✓ Correct Answer!'
+                            : `✗ Incorrect. Correct answer is (${currentQuizQ.answer || 'A'}) ${currentQuizQ.answer_text || ''}`}
+                        </div>
+                        <p className="exp-text">{currentQuizQ.explanation}</p>
+                        {currentQuizQ.chapter_title && (
+                          <div className="exp-source">
+                            Textbook Citation: {BOOK_TITLES[currentQuizQ.book_id] || currentQuizQ.book_id} &gt; {currentQuizQ.chapter_title}
+                          </div>
                         )}
                       </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="quiz-topline">
-                        <span className="subject-tag">PREPPILOT QUESTION BANK</span>
-                        <span className="time-chip"><Target size={14} /> Verified MCQs</span>
-                      </div>
-                      <h2>Ready for a knowledge check?</h2>
-                      <p>
-                        Choose a textbook and chapter below to test yourself on verified questions generated from your course materials.
-                      </p>
+                    )}
 
-                      <div className="quiz-details">
-                        <span><ClipboardList size={16} /> 5 questions</span>
-                        <span><Target size={16} /> Instant feedback</span>
-                        <span><BookOpen size={16} /> Textbook grounded</span>
-                      </div>
-
-                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                    <div style={{ marginTop: '16px', display: 'flex', gap: '10px' }}>
+                      {!quizSubmitted ? (
                         <button
-                          className="primary-btn"
-                          onClick={() => startQuizSession(defaultQuizQuestions)}
+                          className="practice-start-btn"
+                          disabled={!quizChoice}
+                          onClick={handleQuizSubmit}
                         >
-                          <Play size={16} /> Start Core Practice Quiz
+                          Submit Answer
                         </button>
+                      ) : (
                         <button
-                          className="primary-btn"
-                          style={{ background: 'linear-gradient(110deg, #8755f2, #a855f7)' }}
-                          onClick={() => go('Adaptive Quiz')}
+                          className="practice-start-btn"
+                          onClick={handleQuizNext}
                         >
-                          <Zap size={16} /> Try Adaptive Assessment
+                          {quizIndex + 1 < quizQuestions.length ? 'Next Question →' : 'Finish Quiz & View Results'}
                         </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  /* Unified Single-Box Launcher */
+                  <div className="practice-launcher-wrapper">
+                    <div className="launcher-header">
+                      <div>
+                        <h2 className="launcher-title">Ready for a Practice Session?</h2>
+                        <p className="launcher-sub">Select your textbook and chapter to drill verified questions with step-by-step explanations.</p>
                       </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="panel" style={{ padding: '16px' }}>
-                  <h2 style={{ fontSize: '15px', fontFamily: "'Manrope', sans-serif" }}>Select Textbook Chapter</h2>
-                  <p className="muted" style={{ fontSize: '11px', marginBottom: '14px' }}>Load questions from the backend or generate fresh sets.</p>
-
-                  <div className="quiz-chapter-row" style={{ gap: '10px' }}>
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.8px', color: 'var(--text-dim)', display: 'block', marginBottom: '5px' }}>TEXTBOOK</label>
-                      <select
-                        style={{ width: '100%', padding: '7px 10px', background: 'var(--select-bg)', color: 'var(--text-main)', border: '1px solid var(--card-border)', borderRadius: '7px', fontSize: '11px', fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}
-                        value={quizBook}
-                        onChange={e => setQuizBook(e.target.value)}
-                      >
-                        <option value="CLRS">CLRS (Algorithms)</option>
-                        <option value="DS">Data Structures</option>
-                        <option value="C">Let Us C</option>
-                        <option value="CPP">C++ Complete Ref</option>
-                      </select>
+                      <span className="demo-chip" style={{ background: 'var(--badge-bg)', color: 'var(--primary)', border: '1px solid var(--card-border)' }}>
+                        <Target size={13} style={{ marginRight: '4px' }} /> Verified Question Bank
+                      </span>
                     </div>
 
-                    <div>
-                      <label style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.8px', color: 'var(--text-dim)', display: 'block', marginBottom: '5px' }}>CHAPTER</label>
-                      <select
-                        style={{ width: '100%', padding: '7px 10px', background: 'var(--select-bg)', color: 'var(--text-main)', border: '1px solid var(--card-border)', borderRadius: '7px', fontSize: '11px', fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}
-                        value={quizChapter}
-                        onChange={e => setQuizChapter(e.target.value)}
-                      >
-                        {quizChaptersList.map(c => (
-                          <option key={c.chapter} value={c.chapter}>
-                            Ch. {c.chapter}: {c.chapter_title?.slice(0, 24)}...
-                          </option>
+                    {/* Textbook Selector Tabs */}
+                    <div className="launcher-field-group">
+                      <label className="launcher-field-label">TARGET TEXTBOOK</label>
+                      <div className="launcher-book-tabs">
+                        {[
+                          { key: 'CLRS', label: 'Algorithms (CLRS)' },
+                          { key: 'DS', label: 'Data Structures' },
+                          { key: 'C', label: 'Let Us C' },
+                          { key: 'CPP', label: 'C++ Complete Ref' },
+                        ].map(t => (
+                          <button
+                            key={t.key}
+                            type="button"
+                            className={`launcher-book-tab ${quizBook === t.key ? 'active' : ''}`}
+                            onClick={() => {
+                              setQuizBook(t.key)
+                              setQuizChapter('')
+                            }}
+                          >
+                            {t.label}
+                          </button>
                         ))}
-                      </select>
+                      </div>
+                    </div>
+
+                    {/* Chapter & Question Count Controls */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                      <div className="launcher-field-group">
+                        <label className="launcher-field-label">CHAPTER / TOPIC</label>
+                        <select
+                          className="launcher-select"
+                          value={quizChapter}
+                          onChange={e => setQuizChapter(e.target.value)}
+                        >
+                          <option value="">Whole Subject / All Chapters</option>
+                          {quizChaptersList.map(c => (
+                            <option key={c.chapter} value={c.chapter}>
+                              Ch. {c.chapter}: {c.chapter_title?.slice(0, 36)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="launcher-field-group">
+                        <label className="launcher-field-label">QUESTION COUNT</label>
+                        <div className="launcher-count-pills">
+                          {[5, 10, 15].map(cnt => (
+                            <button
+                              key={cnt}
+                              type="button"
+                              className={`launcher-count-pill ${quizCount === cnt ? 'active' : ''}`}
+                              onClick={() => setQuizCount(cnt)}
+                            >
+                              {cnt} Questions
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Feature perks strip */}
+                    <div className="launcher-highlights">
+                      <span className="launcher-highlight-item">
+                        <ClipboardList size={15} color="var(--primary)" /> <b>{quizCount} Questions</b> in active set
+                      </span>
+                      <span className="launcher-highlight-item">
+                        <Target size={15} color="var(--accent)" /> Instant scoring &amp; answer review
+                      </span>
+                      <span className="launcher-highlight-item">
+                        <BookOpen size={15} color="#10b981" /> Grounded in textbook citations
+                      </span>
+                    </div>
+
+                    {quizGenMsg && (
+                      <div style={{ fontSize: '12px', color: 'var(--primary)', padding: '10px 14px', background: 'var(--badge-bg)', border: '1px solid var(--card-border)', borderRadius: '8px', fontFamily: "'DM Sans', sans-serif" }}>
+                        {quizGenMsg}
+                      </div>
+                    )}
+
+                    <div className="launcher-actions">
+                      <button
+                        className="practice-start-btn"
+                        disabled={isGeneratingQuiz}
+                        onClick={loadChapterQuestions}
+                      >
+                        {isGeneratingQuiz ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}
+                        Start Practice Session ({quizCount} Qs)
+                      </button>
+                      <button
+                        className="practice-adaptive-btn"
+                        onClick={() => go('Adaptive Quiz')}
+                      >
+                        <Zap size={16} /> Try IRT Adaptive Quiz
+                      </button>
                     </div>
                   </div>
-
-                  {quizGenMsg && (
-                    <div style={{ fontSize: '11px', color: 'var(--primary)', padding: '7px 10px', background: 'var(--badge-bg)', border: '1px solid var(--card-border)', borderRadius: '6px', margin: '10px 0', fontFamily: "'DM Sans', sans-serif" }}>
-                      {quizGenMsg}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'grid', gap: '8px', marginTop: '14px' }}>
-                    <button
-                      className="primary-btn"
-                      style={{ padding: '8px 14px', fontSize: '11px', fontWeight: 700, gap: '6px' }}
-                      disabled={isGeneratingQuiz}
-                      onClick={loadChapterQuestions}
-                    >
-                      {isGeneratingQuiz ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}
-                      Load &amp; Start Chapter Quiz
-                    </button>
-                    
-                    <button
-                      className="back-nav-btn"
-                      style={{ justifyContent: 'center', padding: '8px 14px', fontSize: '11px' }}
-                      onClick={() => go('Overview')}
-                    >
-                      <LayoutDashboard size={14} /> Return to Workspace Overview
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
             </>
+          )}
+
+          {/* ===================== PREPARE FOR AN EXAM ===================== */}
+          {page === 'Prepare for an Exam' && (
+            <PrepareForExam
+              onBackToWorkspace={() => go('Overview')}
+              onNavigateToPractice={(b, ch) => {
+                setQuizBook(b)
+                setQuizChapter(ch)
+                go('Practice and Try')
+              }}
+              onNavigateToMock={(b, s) => {
+                go('Practice Mock Exam')
+              }}
+            />
           )}
 
           {/* ===================== ADAPTIVE QUIZ ===================== */}
@@ -1293,21 +1460,20 @@ function App() {
             <AdaptiveQuiz onBackToWorkspace={() => go('Overview')} />
           )}
 
-          {/* ===================== SYLLABUS INTELLIGENCE ===================== */}
-          {page === 'Syllabus' && (
-            <SyllabusIntelligence onBackToWorkspace={() => go('Overview')} />
-          )}
-
-          {/* ===================== PREREQUISITE ENGINE ===================== */}
-          {page === 'Prerequisites' && (
-            <PrerequisiteEngine
+          {/* ===================== SYLLABUS & PREREQUISITES ===================== */}
+          {(page === 'Syllabus' || page === 'Prerequisites') && (
+            <SyllabusIntelligence
               onBackToWorkspace={() => go('Overview')}
-              onNavigateToQuiz={() => go('Adaptive Quiz')}
+              onNavigateToPractice={(b, ch) => {
+                setQuizBook(b)
+                setQuizChapter(ch)
+                go('Practice and Try')
+              }}
             />
           )}
 
-          {/* ===================== FULL MOCK EXAM ===================== */}
-          {page === 'Mock Exams' && (
+          {/* ===================== PRACTICE MOCK EXAM ===================== */}
+          {(page === 'Practice Mock Exam' || page === 'Mock Exams') && (
             <MockExam onBackToWorkspace={() => go('Overview')} />
           )}
 

@@ -370,9 +370,72 @@
   border-color: rgba(16, 185, 129, 0.3) !important;
 }
 
-.fc-table-wrap {
-  overflow: auto;
-  max-height: 400px;
+/* Deck Table Panel & Search */
+.fc-deck-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.fc-deck-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.fc-deck-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--pill-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 9px;
+  padding: 6px 12px;
+  transition: border-color 0.18s;
+}
+
+.fc-deck-search:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+.fc-deck-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: inherit;
+  width: 180px;
+}
+
+.fc-deck-search input::placeholder {
+  color: var(--text-dim);
+}
+
+.fc-deck-search span {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--primary);
+  padding-left: 8px;
+  border-left: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+
+.fc-table-empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--pill-bg);
+  border: 1px dashed var(--card-border);
+  border-radius: 12px;
+}
+
+.fc-api-note {
+  display: none;
 }
 
 .fc-table {

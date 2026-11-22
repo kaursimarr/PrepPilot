@@ -17,6 +17,7 @@ It does NOT need app/, retriever.py or answer_generator.py.
 """
 from __future__ import annotations
 
+import collections
 import json
 import math
 import os
@@ -66,16 +67,25 @@ BOOK_TITLES = {
 }
 
 # =============================================================================
-# 1. LLM CLIENT  (Ollama first, Groq second, Gemini as fallback)
+# 1. LLM CLIENT  (Groq primary, Gemini fallback, Ollama for local privacy)
 # =============================================================================
-PROVIDERS = [
-    ("ollama", os.getenv("OLLAMA_URL", "http://localhost:11434/v1"), "OLLAMA_KEY",
-     os.getenv("OLLAMA_MODEL", "qwen2.5:7b")),
-    ("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
-     os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")),
-    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY",
-     os.getenv("GEMINI_MODEL", "gemini-flash-latest")),
-]
+def _get_active_providers():
+    providers = []
+    # If Groq is configured, prioritize for fast cloud reasoning
+    if os.getenv("GROQ_API_KEY"):
+        providers.append(("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY",
+                          os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")))
+    # Gemini fallback
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        providers.append(("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY",
+                          os.getenv("GEMINI_MODEL", "gemini-flash-latest")))
+    # Ollama for local offline mode
+    if os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_KEY") or not providers:
+        providers.append(("ollama", os.getenv("OLLAMA_URL", "http://localhost:11434/v1"), "OLLAMA_KEY",
+                          os.getenv("OLLAMA_MODEL", "qwen2.5:7b")))
+    return providers
+
+PROVIDERS = _get_active_providers()
 
 
 def _call_openai_compatible(base_url: str, api_key: str, model: str,
@@ -671,33 +681,56 @@ Return ONLY JSON: {"results": [{"index": 0, "ok": true, "reason": "short reason"
 def _pick_chunks(conn, book_id: Optional[str], chapter: Optional[str], n: int) -> List[Dict[str, Any]]:
     """Random substantial chunks, preferring ones that have no questions yet."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)")}
-    where, params = ["length(text) >= 500"], []
-    if "garbled_math" in cols:
-        where.append("COALESCE(garbled_math, 0) = 0")
-    if book_id:
-        where.append("book_id = ?")
-        params.append(book_id.upper())
-    if chapter:
-        where.append("CAST(chapter AS TEXT) = ?")
-        params.append(str(chapter).strip())
-    base = ("SELECT chunk_id, book_id, chapter, chapter_title, section, section_title, page_start, page_end, text "
-            "FROM chunks WHERE " + " AND ".join(where))
 
-    def fetch(extra: str) -> List[Dict[str, Any]]:
-        rows = conn.execute(base + extra + " ORDER BY RANDOM() LIMIT ?", params + [n * 4]).fetchall()
+    def _build_query(min_len: int = 500):
+        where, params = [f"length(text) >= {min_len}"], []
+        if "garbled_math" in cols:
+            where.append("COALESCE(garbled_math, 0) = 0")
+        if book_id:
+            where.append("book_id = ?")
+            params.append(book_id.upper())
+        if chapter:
+            ch_s = str(chapter).strip()
+            if ch_s.startswith("exam:"):
+                slot = ch_s.split(":", 1)[1].upper()
+                b = book_id.upper() if book_id else "CLRS"
+                if slot == "T1":
+                    where.append("CAST(chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T1')")
+                    params.append(b)
+                elif slot == "T2":
+                    where.append("CAST(chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T2')")
+                    params.append(b)
+                elif slot in ("T1+T2", "T1_PLUS_T2"):
+                    where.append("CAST(chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot IN ('T1','T2'))")
+                    params.append(b)
+                elif slot == "T3":
+                    where.append("CAST(chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T3')")
+                    params.append(b)
+            else:
+                where.append("CAST(chapter AS TEXT) = ?")
+                params.append(ch_s)
+        base = ("SELECT chunk_id, book_id, chapter, chapter_title, section, section_title, page_start, page_end, text "
+                "FROM chunks WHERE " + " AND ".join(where))
+        return base, params
+
+    def fetch(min_len: int, extra: str) -> List[Dict[str, Any]]:
+        base, params = _build_query(min_len)
+        rows = conn.execute(base + extra + " ORDER BY RANDOM() LIMIT ?", params + [n * 6]).fetchall()
         good = []
         for r in rows:
             d = dict(r)
             t = d["text"]
-            if (sum(ch.isalpha() for ch in t) / max(len(t), 1) >= 0.6      # skip number/garbage-heavy chunks
+            if (sum(ch.isalpha() for ch in t) / max(len(t), 1) >= 0.55      # skip number/garbage-heavy chunks
                     and not _looks_broken(t)                                # skip chunks with lost variable names
                     and not _is_exercise_chunk(t)):                         # skip exercises / end-of-chapter problems
                 good.append(d)
         return good
 
-    fresh = fetch(" AND chunk_id NOT IN (SELECT chunk_id FROM question_bank WHERE chunk_id IS NOT NULL)")
+    fresh = fetch(500, " AND chunk_id NOT IN (SELECT chunk_id FROM question_bank WHERE chunk_id IS NOT NULL)")
     if len(fresh) < n:
-        fresh += [d for d in fetch("") if d["chunk_id"] not in {x["chunk_id"] for x in fresh}]
+        fresh += [d for d in fetch(500, "") if d["chunk_id"] not in {x["chunk_id"] for x in fresh}]
+    if len(fresh) < n:
+        fresh += [d for d in fetch(200, "") if d["chunk_id"] not in {x["chunk_id"] for x in fresh}]
     return fresh[:n]
 
 
@@ -862,26 +895,125 @@ def generate_questions(book_id: Optional[str], chapter: Optional[str], qtype: st
     return {"requested": count, "saved": len(saved), **stats, "questions": saved}
 
 
-def _list_questions(conn, book_id, chapter, qtype, limit, include_answers):
+def _list_questions(conn, book_id: Optional[str] = None, chapter: Optional[str] = None,
+                    qtype: Optional[str] = None, limit: int = 20, include_answers: bool = True,
+                    student_id: Optional[str] = "default") -> List[Dict[str, Any]]:
     where, params = ["q.verified = 1"], []
     if book_id:
-        where.append("c.book_id = ?"); params.append(book_id.upper())
+        where.append("c.book_id = ?")
+        params.append(book_id.upper())
     if chapter:
-        where.append("CAST(c.chapter AS TEXT) = ?"); params.append(str(chapter).strip())
+        ch_s = str(chapter).strip()
+        if ch_s.startswith("exam:"):
+            slot = ch_s.split(":", 1)[1].upper()
+            b = book_id.upper() if book_id else "CLRS"
+            if slot == "T1":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T1')")
+                params.append(b)
+            elif slot == "T2":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T2')")
+                params.append(b)
+            elif slot in ("T1+T2", "T1_PLUS_T2"):
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot IN ('T1','T2'))")
+                params.append(b)
+            elif slot == "T3":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id = ? AND exam_slot = 'T3')")
+                params.append(b)
+        else:
+            where.append("CAST(c.chapter AS TEXT) = ?")
+            params.append(ch_s)
     if qtype:
-        where.append("q.qtype = ?"); params.append(qtype)
-    rows = conn.execute(
+        where.append("q.qtype = ?")
+        params.append(qtype)
+
+    sql = (
         "SELECT q.id, q.qtype, q.question, q.options_json, q.answer, q.explanation, q.difficulty, q.marks, q.source, "
-        "q.chunk_id, c.book_id, c.chapter, c.chapter_title, c.section, c.page_start FROM question_bank q "
-        "LEFT JOIN chunks c ON c.chunk_id = q.chunk_id WHERE " + " AND ".join(where) +
-        " ORDER BY q.id DESC LIMIT ?", params + [limit]).fetchall()
+        "q.chunk_id, c.book_id, c.chapter, c.chapter_title, c.section, c.page_start "
+        "FROM question_bank q "
+        "LEFT JOIN chunks c ON c.chunk_id = q.chunk_id "
+        "WHERE " + " AND ".join(where)
+    )
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    # If specific chapter returned 0 questions, fallback to entire textbook pool
+    if not rows and book_id and chapter:
+        fb_where = ["q.verified = 1", "c.book_id = ?"]
+        fb_params = [book_id.upper()]
+        if qtype:
+            fb_where.append("q.qtype = ?")
+            fb_params.append(qtype)
+        fb_sql = (
+            "SELECT q.id, q.qtype, q.question, q.options_json, q.answer, q.explanation, q.difficulty, q.marks, q.source, "
+            "q.chunk_id, c.book_id, c.chapter, c.chapter_title, c.section, c.page_start "
+            "FROM question_bank q "
+            "LEFT JOIN chunks c ON c.chunk_id = q.chunk_id "
+            "WHERE " + " AND ".join(fb_where)
+        )
+        rows = [dict(r) for r in conn.execute(fb_sql, fb_params).fetchall()]
+
+    if not rows:
+        return []
+
+    # Track seen question IDs to prevent repetition in consecutive quiz attempts
+    seen_map = {}
+    if student_id:
+        seen_q = conn.execute(
+            "SELECT CAST(question_id AS INTEGER), MAX(attempted_at) FROM quiz_attempts "
+            "WHERE student_id = ? AND question_id IS NOT NULL GROUP BY question_id",
+            (student_id,)
+        ).fetchall()
+        for qid, att_time in seen_q:
+            if qid is not None:
+                seen_map[qid] = att_time or ""
+
+        seen_a = conn.execute(
+            "SELECT a.question_id, MAX(s.started_at) FROM adaptive_answers a "
+            "JOIN adaptive_sessions s ON s.id = a.session_id "
+            "WHERE s.student_id = ? GROUP BY a.question_id",
+            (student_id,)
+        ).fetchall()
+        for qid, att_time in seen_a:
+            if qid is not None and qid not in seen_map:
+                seen_map[qid] = att_time or ""
+
+    unseen = [r for r in rows if r["id"] not in seen_map]
+    seen = [r for r in rows if r["id"] in seen_map]
+
+    # Ensure conceptual diversity: sample across distinct chunks/sections
+    def _pick_diverse(candidates: List[Dict[str, Any]], needed: int) -> List[Dict[str, Any]]:
+        by_chunk = collections.defaultdict(list)
+        for q in candidates:
+            by_chunk[q.get("chunk_id") or q["id"]].append(q)
+        chunk_keys = list(by_chunk.keys())
+        random.shuffle(chunk_keys)
+        for k in chunk_keys:
+            random.shuffle(by_chunk[k])
+        picked = []
+        while len(picked) < needed and any(by_chunk.values()):
+            for k in chunk_keys:
+                if by_chunk[k] and len(picked) < needed:
+                    picked.append(by_chunk[k].pop(0))
+        return picked
+
+    random.shuffle(unseen)
+    selected = _pick_diverse(unseen, limit)
+
+    # Controlled repetition when unseen pool is exhausted: pick oldest seen
+    if len(selected) < limit and seen:
+        needed = limit - len(selected)
+        seen.sort(key=lambda q: seen_map.get(q["id"], ""))
+        selected += _pick_diverse(seen, needed)
+
+    # Final randomization of question presentation order
+    random.shuffle(selected)
+
     out = []
-    for r in rows:
-        d = dict(r)
+    for d in selected:
         raw_opts = d.pop("options_json", None)
         d["options"] = json.loads(raw_opts) if raw_opts else None
         if not include_answers:
-            d.pop("answer", None); d.pop("explanation", None)
+            d.pop("answer", None)
+            d.pop("explanation", None)
         out.append(d)
     return out
 
@@ -958,6 +1090,9 @@ def _adaptive_pick(conn, session_id: int) -> Optional[Dict[str, Any]]:
             elif slot in ("T1+T2", "T1_PLUS_T2"):
                 where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot IN ('T1','T2'))")
                 params.append(s["book_id"])
+            elif slot == "T3":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T3')")
+                params.append(s["book_id"])
         else:
             where.append("CAST(c.chapter AS TEXT)=?")
             params.append(ch_s)
@@ -975,6 +1110,17 @@ def _adaptive_pick(conn, session_id: int) -> Optional[Dict[str, Any]]:
         (s["student_id"],))}
     target = min(0.95, max(0.1, s["theta"] + TARGET_OFFSET))
     cand = [dict(r) for r in rows if r["id"] not in in_session]
+    if not cand and s["chapter"]:
+        # Fallback to book-wide questions so adaptive quiz proceeds smoothly without interrupting the session
+        fallback_rows = conn.execute(
+            "SELECT q.id, q.question, q.options_json, q.difficulty, q.chunk_id, c.book_id, c.chapter, c.chapter_title, "
+            "c.section, c.page_start, e.exam_slot "
+            "FROM question_bank q "
+            "JOIN chunks c ON c.chunk_id=q.chunk_id "
+            "LEFT JOIN syllabus_exam_map e ON e.book_id=c.book_id AND e.chapter=CAST(c.chapter AS TEXT) "
+            "WHERE q.verified=1 AND q.qtype='mcq' AND c.book_id=?",
+            [s["book_id"]]).fetchall()
+        cand = [dict(r) for r in fallback_rows if r["id"] not in in_session]
     if not cand:
         return None
     # unseen-before questions first, then closest difficulty to the target (small random tie-break)
@@ -1220,6 +1366,9 @@ def _bank_counts(conn, book_id: str, chapter: Optional[str]) -> Dict[str, int]:
             elif slot in ("T1+T2", "T1_PLUS_T2"):
                 where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot IN ('T1','T2'))")
                 params.append(book_id.upper())
+            elif slot == "T3":
+                where.append("CAST(c.chapter AS TEXT) IN (SELECT chapter FROM syllabus_exam_map WHERE book_id=? AND exam_slot='T3')")
+                params.append(book_id.upper())
         else:
             where.append("CAST(c.chapter AS TEXT)=?")
             params.append(ch_s)
@@ -1228,6 +1377,12 @@ def _bank_counts(conn, book_id: str, chapter: Optional[str]) -> Dict[str, int]:
     out = {"easy": 0, "medium": 0, "hard": 0}
     for r in rows:
         out[_level_of(r[0])] += 1
+    if sum(out.values()) == 0 and chapter:
+        fallback_rows = conn.execute(
+            "SELECT q.difficulty FROM question_bank q JOIN chunks c ON c.chunk_id=q.chunk_id WHERE "
+            "q.verified=1 AND q.qtype='mcq' AND c.book_id=?", (book_id.upper(),)).fetchall()
+        for r in fallback_rows:
+            out[_level_of(r[0])] += 1
     return out
 
 
@@ -1656,9 +1811,9 @@ def generate_endpoint(body: GenerateIn):
 
 @app.get("/questions")
 def questions(book_id: Optional[str] = None, chapter: Optional[str] = None, qtype: Optional[str] = None,
-              limit: int = 20, include_answers: bool = True):
+              limit: int = 20, include_answers: bool = True, student_id: Optional[str] = "default"):
     """Verified questions from the question bank."""
-    return run_db(_list_questions, book_id, chapter, qtype, min(max(limit, 1), 200), include_answers)
+    return run_db(_list_questions, book_id, chapter, qtype, min(max(limit, 1), 200), include_answers, student_id)
 
 
 # =============================================================================
@@ -2635,10 +2790,33 @@ def syllabus_reset_partition_endpoint(book_id: str):
 # 5d. PREREQUISITE ENGINE  (Dependency Graphs, Mastery Tracking, & Learning Paths)
 # =============================================================================
 
+def _ensure_default_prerequisites(conn, book_id: str):
+    """Seed academic prerequisite DAG relationships if not present for the textbook."""
+    book = book_id.upper()
+    existing = conn.execute("SELECT COUNT(*) FROM chapter_prereqs WHERE book_id=?", (book,)).fetchone()[0]
+    if existing > 0:
+        return
+    prereqs_path = BASE_DIR / "default_prereqs.json"
+    if prereqs_path.exists():
+        try:
+            with open(prereqs_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            edges = data.get(book, [])
+            for ch, p_ch in edges:
+                conn.execute(
+                    "INSERT OR IGNORE INTO chapter_prereqs (book_id, chapter, prereq_chapter) VALUES (?, ?, ?)",
+                    (book, str(ch), str(p_ch))
+                )
+            conn.commit()
+        except Exception as e:
+            print(f"[prereqs] error seeding default prereqs: {e}")
+
+
 def _get_prerequisite_graph(conn, book_id: str, student_id: str = "default") -> Dict[str, Any]:
     """Generates the prerequisite graph, mastery states, and personalized learning sequence."""
     book = book_id.upper()
     _ensure_default_partitions(conn, book)
+    _ensure_default_prerequisites(conn, book)
     chapters = _get_syllabus_chapters(conn, book)
 
     # Load student mastery
@@ -2850,32 +3028,47 @@ def _create_mock_exam(conn, student_id: str, book_id: str, exam_type: str = "T3"
     pool_t3 = [r for r in pool_all if r.get("exam_slot") == "T3"]
 
     selected_questions: List[Dict[str, Any]] = []
+    chosen_ids = set()
+
+    def add_from_pool(pool, needed):
+        nonlocal selected_questions, chosen_ids
+        available = [q for q in pool if q["id"] not in chosen_ids]
+        if not available:
+            return
+        take = min(len(available), needed)
+        sample = random.sample(available, take)
+        for q in sample:
+            selected_questions.append(q)
+            chosen_ids.add(q["id"])
 
     if e_type == "T1":
-        source = pool_t1 if pool_t1 else pool_all
-        selected_questions = random.sample(source, min(len(source), question_count))
-    elif e_type == "T2":
-        source = pool_t2 if pool_t2 else pool_all
-        selected_questions = random.sample(source, min(len(source), question_count))
-    else:
-        # T3 / Comprehensive Final: 30% T1, 30% T2, 40% T3
-        cnt_t1 = max(1, round(question_count * 0.3))
-        cnt_t2 = max(1, round(question_count * 0.3))
-        cnt_t3 = max(1, question_count - cnt_t1 - cnt_t2)
-
-        chosen_ids = set()
-        for pool, cnt in ((pool_t1, cnt_t1), (pool_t2, cnt_t2), (pool_t3, cnt_t3)):
-            sample = random.sample(pool, min(len(pool), cnt)) if pool else []
-            for q in sample:
-                if q["id"] not in chosen_ids:
-                    selected_questions.append(q)
-                    chosen_ids.add(q["id"])
-
+        add_from_pool(pool_t1, question_count)
         if len(selected_questions) < question_count:
-            remaining = [q for q in pool_all if q["id"] not in chosen_ids]
-            needed = question_count - len(selected_questions)
-            if remaining:
-                selected_questions.extend(random.sample(remaining, min(len(remaining), needed)))
+            add_from_pool(pool_all, question_count - len(selected_questions))
+    elif e_type == "T2":
+        add_from_pool(pool_t2, question_count)
+        if len(selected_questions) < question_count:
+            add_from_pool(pool_t3, question_count - len(selected_questions))
+            add_from_pool(pool_t1, question_count - len(selected_questions))
+            add_from_pool(pool_all, question_count - len(selected_questions))
+    else:
+        # T3 / Comprehensive Final: 35% T1, 35% T2, 30% T3
+        cnt_t1 = max(1, round(question_count * 0.35))
+        cnt_t2 = max(1, round(question_count * 0.35))
+        cnt_t3 = max(1, question_count - cnt_t1 - cnt_t2)
+        add_from_pool(pool_t3, cnt_t3)
+        add_from_pool(pool_t2, cnt_t2)
+        add_from_pool(pool_t1, cnt_t1)
+        if len(selected_questions) < question_count:
+            add_from_pool(pool_all, question_count - len(selected_questions))
+
+    # If the requested count exceeds unique questions in the pool,
+    # sample with controlled repetition so the mock exam ALWAYS delivers the exact requested question count!
+    while len(selected_questions) < question_count and pool_all:
+        needed = question_count - len(selected_questions)
+        extra = random.sample(pool_all, min(len(pool_all), needed))
+        for q in extra:
+            selected_questions.append(dict(q))
 
     if not selected_questions:
         raise ValueError(f"No questions currently available in question bank for {book}. Please prefill bank first.")

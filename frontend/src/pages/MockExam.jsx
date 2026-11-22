@@ -179,7 +179,7 @@ export default function MockExam({ onBackToWorkspace }) {
             <div className="mock-title">
               <div className="mock-title-icon"><FileText size={20} /></div>
               <div>
-                Full Mock Examination
+                Practice Mock Exam
                 <div className="mock-subtitle">Standardized, timed exam simulation for T1, T2 &amp; T3 comprehensive scope</div>
               </div>
             </div>

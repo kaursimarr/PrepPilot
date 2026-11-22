@@ -1587,17 +1587,33 @@ def generate_flashcards(book_id, chapter, count):
         except Exception as e:
             errors.append(str(e)[:200])
 
+    msg = None
+    if saved:
+        msg = f"Generated and saved {len(saved)} flashcard(s)."
+    elif errors:
+        msg = f"Generation failed: {errors[0]}"
+    else:
+        msg = "No flashcards could be generated from the selected content."
+
     return {
         "requested": count,
         "saved": len(saved),
         "errors": errors,
-        "flashcards": saved
+        "flashcards": saved,
+        "message": msg
     }
 
 
-def _list_flashcards(conn, book_id, chapter, limit):
+def _list_flashcards(conn, book_id, chapter, limit, student_id="default"):
     where = ["1=1"]
+    join_student = ""
+    student_cols = ", NULL AS ease, NULL AS interval_days, NULL AS reps, NULL AS due_date"
     params = []
+
+    if student_id:
+        join_student = "LEFT JOIN student_cards s ON s.card_id = f.id AND s.student_id = ?"
+        student_cols = ", s.ease, s.interval_days, s.reps, s.due_date"
+        params.append(student_id)
 
     if book_id:
         where.append("c.book_id = ?")
@@ -1608,14 +1624,16 @@ def _list_flashcards(conn, book_id, chapter, limit):
         params.append(str(chapter).strip())
 
     rows = conn.execute(
-        """
+        f"""
         SELECT f.id, f.front, f.back, f.chunk_id,
                c.book_id, c.chapter, c.chapter_title,
-               c.section, c.page_start
+               c.section, c.page_start{student_cols}
         FROM flashcards f
         LEFT JOIN chunks c ON c.chunk_id = f.chunk_id
-        WHERE """ + " AND ".join(where) +
-        " ORDER BY f.id DESC LIMIT ?",
+        {join_student}
+        WHERE {" AND ".join(where)}
+        ORDER BY f.id DESC LIMIT ?
+        """,
         params + [limit]
     ).fetchall()
 

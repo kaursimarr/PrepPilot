@@ -450,6 +450,11 @@ def _init() -> None:
             conn.execute(f"ALTER TABLE mock_exams ADD COLUMN {col_def}")
         except Exception:
             pass
+    for b in ("CLRS", "DS", "C", "CPP"):
+        try:
+            _ensure_default_partitions(conn, b)
+        except Exception:
+            pass
     _state["fts"] = _ensure_fts(conn)
     _state["conn"] = conn
     try:
@@ -778,6 +783,36 @@ def _tidy(text: str, explanation: bool = False) -> str:
     return t[:1].upper() + t[1:] if t else t
 
 
+def _normalize_choice(val: Any, options: Optional[List[str]] = None) -> Optional[str]:
+    """Normalize an answer or submission to canonical 'A', 'B', 'C', or 'D', matching against options if needed."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    # If directly 'A', 'B', 'C', or 'D' (or '(A)', 'A.', 'a)', etc.)
+    m = re.match(r"^\(?([A-Da-d])\)?[.:]?\s*$", s)
+    if m:
+        return m.group(1).upper()
+    if options:
+        # Check if s matches an option string exactly or ignoring whitespace/case
+        for idx, opt in enumerate(options):
+            if s.lower() == str(opt).strip().lower():
+                return "ABCD"[idx]
+        # Check if s starts with option letter like "A) Option text"
+        m_prefix = re.match(r"^\(?([A-Da-d])\)?\s*[\).:]\s*(.+)$", s)
+        if m_prefix:
+            letter = m_prefix.group(1).upper()
+            rem = m_prefix.group(2).strip().lower()
+            idx = "ABCD".find(letter)
+            if 0 <= idx < len(options) and rem == str(options[idx]).strip().lower():
+                return letter
+    first = s[:1].upper()
+    if first in "ABCD":
+        return first
+    return None
+
+
 def _clean_question(q: Any, qtype: str, level: float) -> Optional[Dict[str, Any]]:
     """Validate one LLM question. MCQ options are shuffled here so the answer is not always B or C."""
     if not isinstance(q, dict):
@@ -957,27 +992,52 @@ def _list_questions(conn, book_id: Optional[str] = None, chapter: Optional[str] 
     # Track seen question IDs to prevent repetition in consecutive quiz attempts
     seen_map = {}
     if student_id:
-        seen_q = conn.execute(
-            "SELECT CAST(question_id AS INTEGER), MAX(attempted_at) FROM quiz_attempts "
-            "WHERE student_id = ? AND question_id IS NOT NULL GROUP BY question_id",
-            (student_id,)
-        ).fetchall()
-        for qid, att_time in seen_q:
-            if qid is not None:
-                seen_map[qid] = att_time or ""
+        st_ids = [student_id]
+        try:
+            st_row = conn.execute("SELECT id FROM students WHERE username = ?", (student_id,)).fetchone()
+            if st_row:
+                st_ids.append(st_row[0])
+                st_ids.append(str(st_row[0]))
+            elif str(student_id).isdigit():
+                st_u = conn.execute("SELECT username FROM students WHERE id = ?", (int(student_id),)).fetchone()
+                if st_u:
+                    st_ids.append(st_u[0])
+        except Exception:
+            pass
 
-        seen_a = conn.execute(
-            "SELECT a.question_id, MAX(s.started_at) FROM adaptive_answers a "
-            "JOIN adaptive_sessions s ON s.id = a.session_id "
-            "WHERE s.student_id = ? GROUP BY a.question_id",
-            (student_id,)
-        ).fetchall()
-        for qid, att_time in seen_a:
-            if qid is not None and qid not in seen_map:
-                seen_map[qid] = att_time or ""
+        placeholders = ",".join("?" for _ in st_ids)
+        try:
+            seen_q = conn.execute(
+                f"SELECT question_id, MAX(attempted_at) FROM quiz_attempts "
+                f"WHERE student_id IN ({placeholders}) AND question_id IS NOT NULL GROUP BY question_id",
+                st_ids
+            ).fetchall()
+            for qid, att_time in seen_q:
+                if qid is not None:
+                    try:
+                        seen_map[int(qid)] = att_time or ""
+                    except (ValueError, TypeError):
+                        pass
+                    seen_map[str(qid)] = att_time or ""
+        except Exception:
+            pass
 
-    unseen = [r for r in rows if r["id"] not in seen_map]
-    seen = [r for r in rows if r["id"] in seen_map]
+        try:
+            seen_a = conn.execute(
+                f"SELECT a.question_id, MAX(s.started_at) FROM adaptive_answers a "
+                f"JOIN adaptive_sessions s ON s.id = a.session_id "
+                f"WHERE s.student_id IN ({placeholders}) GROUP BY a.question_id",
+                st_ids
+            ).fetchall()
+            for qid, att_time in seen_a:
+                if qid is not None:
+                    seen_map[qid] = att_time or ""
+                    seen_map[str(qid)] = att_time or ""
+        except Exception:
+            pass
+
+    unseen = [r for r in rows if r["id"] not in seen_map and str(r["id"]) not in seen_map]
+    seen = [r for r in rows if r["id"] in seen_map or str(r["id"]) in seen_map]
 
     # Ensure conceptual diversity: sample across distinct chunks/sections
     def _pick_diverse(candidates: List[Dict[str, Any]], needed: int) -> List[Dict[str, Any]]:
@@ -1177,7 +1237,7 @@ def _adaptive_record(conn, session_id: int, question_id: int, answer: str, time_
         raise KeyError("session not found")
     if s["finished_at"]:
         raise ValueError("session already finished")
-    if s["current_question_id"] != question_id:
+    if s["current_question_id"] is not None and s["current_question_id"] != question_id:
         raise ValueError("this is not the question currently asked in this session")
     q = conn.execute(
         "SELECT q.id, q.answer, q.explanation, q.difficulty, q.options_json, q.verified, c.book_id, c.chapter FROM question_bank q "
@@ -1186,8 +1246,10 @@ def _adaptive_record(conn, session_id: int, question_id: int, answer: str, time_
         raise KeyError("question not found")
     if not q["verified"]:
         raise ValueError("this question was retired; request a new one from /adaptive/session/{id}/question")
-    given = answer.strip().upper()[:1]
-    correct = given == str(q["answer"]).strip().upper()[:1]
+    opts = json.loads(q["options_json"]) if q["options_json"] else []
+    given = _normalize_choice(answer, opts) or answer.strip().upper()[:1]
+    correct_letter = _normalize_choice(q["answer"], opts) or str(q["answer"]).strip().upper()[:1]
+    correct = bool(given and given == correct_letter)
     chap = str(q["chapter"] or "")
     m = conn.execute("SELECT theta, attempts, correct FROM adaptive_mastery WHERE student_id=? AND book_id=? AND chapter=?",
                      (s["student_id"], s["book_id"], chap)).fetchone()
@@ -1220,9 +1282,8 @@ def _adaptive_record(conn, session_id: int, question_id: int, answer: str, time_
             p_names = ", ".join(f"Ch. {p['chapter']} ({p['title']})" for p in prereqs)
             prereq_tip = f"Prerequisite Concept: Revise {p_names} to strengthen your foundation for this topic."
 
-    opts = json.loads(q["options_json"]) if q["options_json"] else []
-    idx = "ABCD".find(str(q["answer"]).strip().upper()[:1])
-    return {"correct": correct, "correct_answer": str(q["answer"]).strip().upper()[:1],
+    idx = "ABCD".find(correct_letter) if correct_letter in "ABCD" else -1
+    return {"correct": correct, "correct_answer": correct_letter,
             "correct_answer_text": opts[idx] if 0 <= idx < len(opts) else None,
             "explanation": q["explanation"], "answered": n_session + 1, "total": s["max_questions"],
             "ability": round(new_session_theta, 3), "level": _level_label(new_session_theta), "finished": done,
@@ -2341,6 +2402,30 @@ def _record_quiz_attempt(conn, item: QuizAttemptIn):
             "INSERT INTO topic_mastery (student_id, topic_id, topic_name, mastery_score, attempts_count) VALUES (?, ?, ?, ?, 1)",
             (s_id, item.topic_id, topic_name, init_score)
         )
+
+    # Sync into adaptive_mastery when question is tied to a textbook chapter
+    if item.question_id:
+        try:
+            q_info = conn.execute(
+                "SELECT c.book_id, c.chapter FROM question_bank q "
+                "JOIN chunks c ON c.chunk_id = q.chunk_id WHERE q.id = ?",
+                (item.question_id,)
+            ).fetchone()
+            if q_info and q_info[0] and q_info[1]:
+                b_id, c_num = q_info[0], str(q_info[1])
+                m = conn.execute(
+                    "SELECT theta, attempts, correct FROM adaptive_mastery WHERE student_id=? AND book_id=? AND chapter=?",
+                    (item.student_id, b_id, c_num)
+                ).fetchone()
+                m_theta, m_att, m_cor = (m["theta"], m["attempts"], m["correct"]) if m else (THETA_START, 0, 0)
+                new_m_theta = _update_theta(m_theta, 0.5, item.is_correct, m_att)
+                conn.execute(
+                    "INSERT OR REPLACE INTO adaptive_mastery VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                    (item.student_id, b_id, c_num, new_m_theta, m_att + 1, m_cor + int(item.is_correct))
+                )
+        except Exception:
+            pass
+
     conn.commit()
     return {"status": "recorded", "topic_id": item.topic_id}
 
@@ -2403,10 +2488,31 @@ def _get_progress_mastery(conn, student_id: str = "default"):
 
 
 def _get_quiz_history(conn, student_id: str = "default", limit: int = 20):
+    st_ids = [student_id]
+    try:
+        st_row = conn.execute("SELECT id FROM students WHERE username = ?", (student_id,)).fetchone()
+        if st_row:
+            st_ids.append(st_row[0])
+            st_ids.append(str(st_row[0]))
+        elif str(student_id).isdigit():
+            st_u = conn.execute("SELECT username FROM students WHERE id = ?", (int(student_id),)).fetchone()
+            if st_u:
+                st_ids.append(st_u[0])
+    except Exception:
+        pass
+
+    placeholders = ",".join("?" for _ in st_ids)
     rows = conn.execute(
-        "SELECT q.id, q.question_id, q.topic_id, q.question_text, q.selected_answer, q.correct_answer, q.is_correct, q.attempted_at "
-        "FROM quiz_attempts q ORDER BY q.id DESC LIMIT ?", (limit,)
+        f"SELECT q.id, q.question_id, q.topic_id, q.question_text, q.selected_answer, q.correct_answer, q.is_correct, q.attempted_at "
+        f"FROM quiz_attempts q WHERE q.student_id IN ({placeholders}) ORDER BY q.id DESC LIMIT ?",
+        (*st_ids, limit)
     ).fetchall()
+    if not rows:
+        # Fallback to general recent attempts if student has no specific history yet
+        rows = conn.execute(
+            "SELECT q.id, q.question_id, q.topic_id, q.question_text, q.selected_answer, q.correct_answer, q.is_correct, q.attempted_at "
+            "FROM quiz_attempts q ORDER BY q.id DESC LIMIT ?", (limit,)
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -3252,12 +3358,13 @@ def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_se
     review_items = []
 
     for item in items:
+        opts = json.loads(item["options_json"]) if item["options_json"] else []
         qid_str = str(item["question_id"])
         pos_str = str(item["position"])
-        given_raw = answers.get(qid_str) or answers.get(pos_str) or ""
-        given = given_raw.strip().upper()[:1] if given_raw else None
-        correct_letter = str(item["answer"]).strip().upper()[:1]
-        is_correct = (given == correct_letter)
+        given_raw = answers.get(qid_str) or answers.get(pos_str) or answers.get(item["question_id"]) or answers.get(item["position"]) or ""
+        given = _normalize_choice(given_raw, opts)
+        correct_letter = _normalize_choice(item["answer"], opts) or str(item["answer"]).strip().upper()[:1]
+        is_correct = bool(given and given == correct_letter)
 
         slot = item["exam_slot"] or "T1"
         if slot not in tier_stats:
@@ -3286,7 +3393,6 @@ def _submit_mock_exam(conn, exam_id: int, answers: Dict[str, str], time_spent_se
             (given, mark, exam_id, item["question_id"])
         )
 
-        opts = json.loads(item["options_json"]) if item["options_json"] else []
         idx = "ABCD".find(correct_letter) if correct_letter in "ABCD" else -1
         correct_text = opts[idx] if 0 <= idx < len(opts) else None
 
@@ -3405,6 +3511,7 @@ class MockExamSubmitIn(BaseModel):
 
 
 @app.post("/mock-exam/create")
+@app.post("/mock-exams/create")
 def mock_exam_create_endpoint(body: MockExamCreateIn):
     """Generate a timed full practice exam for T1, T2, or T3 comprehensive syllabus."""
     try:
@@ -3414,6 +3521,7 @@ def mock_exam_create_endpoint(body: MockExamCreateIn):
 
 
 @app.get("/mock-exam/{exam_id}")
+@app.get("/mock-exams/{exam_id}")
 def mock_exam_get_endpoint(exam_id: int):
     """Retrieve an active or finished practice exam."""
     try:
@@ -3423,6 +3531,7 @@ def mock_exam_get_endpoint(exam_id: int):
 
 
 @app.post("/mock-exam/{exam_id}/submit")
+@app.post("/mock-exams/{exam_id}/submit")
 def mock_exam_submit_endpoint(exam_id: int, body: MockExamSubmitIn):
     """Submit a practice exam, grade results, and diagnose prerequisite gaps."""
     try:
@@ -3432,8 +3541,16 @@ def mock_exam_submit_endpoint(exam_id: int, body: MockExamSubmitIn):
 
 
 @app.get("/mock-exam/history/{student_id}")
+@app.get("/mock-exams/history/{student_id}")
 def mock_exam_history_endpoint(student_id: str, book_id: Optional[str] = None):
     """List historical practice exam attempts for a student."""
+    return run_db(_list_mock_exams, student_id, book_id)
+
+
+@app.get("/mock-exam/history")
+@app.get("/mock-exams/history")
+def mock_exam_history_query_endpoint(student_id: str = "default", book_id: Optional[str] = None):
+    """List historical practice exam attempts with query parameter."""
     return run_db(_list_mock_exams, student_id, book_id)
 
 
